@@ -1,0 +1,26 @@
+# ── Secrets & tokens ──────────────────────────────────────────────────────────
+.env
+tokens.json
+
+# ── Tesla key pair (NEVER commit private key) ─────────────────────────────────
+tesla-private.pem
+*.pem
+
+# ── Auto-generated launcher (contains absolute paths) ─────────────────────────
+start-tesla-silent.ps1
+
+# ── Build output ──────────────────────────────────────────────────────────────
+dist/
+
+# ── Dependencies ──────────────────────────────────────────────────────────────
+node_modules/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+server.log
+
+# ── OS / editor noise ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

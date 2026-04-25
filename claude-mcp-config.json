@@ -1,0 +1,22 @@
+{
+  "_comment": "Add the 'mcpServers' block below into your Claude Desktop config.",
+  "_configPath_macOS":  "~/Library/Application Support/Claude/claude_desktop_config.json",
+  "_configPath_windows": "%APPDATA%\\Claude\\claude_desktop_config.json",
+
+  "mcpServers": {
+    "tesla": {
+      "command": "node",
+      "args": [
+        "C:\\Users\\satya\\OneDrive\\Documents\\Prabhay AI\\tesla-mcp\\dist\\index.js"
+      ],
+      "env": {
+        "TESLA_CLIENT_ID":     "de53c727-0415-4a57-bb98-ded0eaff5a0b",
+        "TESLA_CLIENT_SECRET": "ta-secret.srCazKAoJ!+46AZK",
+        "TESLA_ACCESS_TOKEN":  "PASTE_YOUR_TOKEN_HERE",
+        "TESLA_REFRESH_TOKEN": "PASTE_YOUR_REFRESH_TOKEN_HERE",
+        "TESLA_VIN":           "PASTE_YOUR_VIN_HERE",
+        "MCP_MODE":            "stdio"
+      }
+    }
+  }
+}
