@@ -2,7 +2,7 @@
 
 Control your Tesla with natural voice commands through Siri — powered by Google Gemini AI, the Tesla Fleet API, and a self-hosted Node.js server.
 
-Say **"Hey Siri, Tesla — let's go home"** and your car navigates home, sets the temperature to 22°, starts the climate, and texts your wife your ETA. All in one breath.
+Say **"Hey Siri, Tesla — let's go home"** and your car navigates home, sets the temperature to 22°, starts the climate, and texts your closed ones your ETA. All in one breath.
 
 ---
 
