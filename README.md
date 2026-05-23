@@ -1,20 +1,20 @@
 # Tesla Siri Server
 
-Control your Tesla with natural voice commands through Siri — powered by **Groq (free Llama 3.3)**, the Tesla Fleet API, and a Node.js server deployed on Railway.
+Control your Tesla with **Siri voice commands** and **HomeKit** — powered by Groq (free Llama 3.3 AI) and deployed on Railway. No always-on computer, no ngrok.
 
-Say **"Hey Siri, Car — let's go home"** and your Tesla navigates home, sets the temperature to 22°, starts the climate, and texts your ETA. All in one breath.
+Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and sets temperature. Say **"Hey Siri, Car — let's go home"** and it navigates home, sets temp, and texts your ETA.
 
 ---
 
 ## What it does
 
-- **Natural language commands** via Siri → Groq/Llama AI → Tesla action
-- **Smart macros** — instant phrases ("let's go home") that run multiple actions without any AI roundtrip
-- **Multi-action commands** — navigate + climate + message in a single voice command
-- **Auto ETA messaging** — calculates real driving time via OSRM routing and texts your contact
-- **Live dashboard** — browser UI with battery gauge, quick controls, and AI chat
-- **Auto token refresh** — Tesla OAuth tokens refresh every 6 hours
-- **MCP server** — also works as a Claude Desktop plugin
+- **Siri voice commands** — natural language via Groq AI (free)
+- **HomeKit accessories** — lock, climate, sentry, charging, temperature as native Home app tiles
+- **Smart macros** — instant multi-step phrases that fire without any AI roundtrip
+- **Auto ETA SMS** — calculates real drive time and texts your contact
+- **Live dashboard** — browser UI with battery arc, quick controls, and AI chat
+- **MCP server** — Claude Desktop plugin for AI-assisted car control
+- **Auto token refresh** — Tesla tokens refresh every 6 hours, survives restarts
 
 ---
 
@@ -22,9 +22,10 @@ Say **"Hey Siri, Car — let's go home"** and your Tesla navigates home, sets th
 
 | Say this | What happens |
 |---|---|
-| "Let's go home" | Navigate home + climate 22° + text ETA to contact |
+| "Let's go home" | Navigate home + climate 22° + text ETA |
 | "Drive to work" | Navigate to work + climate 22° |
-| "What's my battery?" | Speaks current battery % and range |
+| "Warm up the car" | Climate on at 22° |
+| "What's my battery?" | Speaks battery % and range |
 | "Lock the car" | Locks all doors |
 | "Turn on sentry" | Enables sentry mode |
 | "Set temp to 21" | Sets cabin temperature |
@@ -37,31 +38,35 @@ Say **"Hey Siri, Car — let's go home"** and your Tesla navigates home, sets th
 
 ```
 Siri Shortcut (iPhone)
-       │  POST /chat  { message, session }
+       │  POST /chat
        ▼
-Express Server (Railway — port from env)
-       │
-       ├── Macro match? ──► Run steps instantly (no AI)
-       │
-       ├── Groq Llama 3.3 ──► Parse intent → tool + params
-       │
-       └── Tesla Fleet API (EU) ──► Vehicle commands
-               │
-               └── OSRM routing ──► Real drive-time ETA
+Railway Server  ─────────────────────────────────────┐
+       │                                             │
+       ├── Macro match? ──► run steps instantly      │
+       ├── Groq Llama 3.3 ──► parse intent           │
+       └── Tesla Fleet API ──► vehicle commands      │
+               └── OSRM ──► real drive-time ETA      │
+                                                     │
+Homebridge (Raspberry Pi / Mac) ─────────────────────┘
+       │  polls /homekit/* endpoints
+       ▼
+Home app / Hey Siri (native HomeKit)
 ```
 
 ---
 
 ## Prerequisites
 
-- **Node.js 18+** and **npm**
-- **Tesla Developer account** — [developer.tesla.com](https://developer.tesla.com)
+- **Tesla Developer account** — [developer.tesla.com](https://developer.tesla.com) (free)
 - **Groq API key** (free) — [console.groq.com](https://console.groq.com)
-- **Railway account** (free tier works) — [railway.app](https://railway.app)
+- **Railway account** (free tier) — [railway.app](https://railway.app)
+- **Node.js 18+** installed locally — only needed for the one-time token setup
 
 ---
 
-## Setup
+## Part 1 — One-time local setup
+
+These steps run on your machine once. After this, everything lives on Railway.
 
 ### 1. Clone and install
 
@@ -71,19 +76,19 @@ cd tesla-siri
 npm install
 ```
 
-### 2. Configure environment
+### 2. Create your `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
-- `TESLA_CLIENT_ID` and `TESLA_CLIENT_SECRET` — from your Tesla developer app
-- `TESLA_VIN` — found on your Tesla touchscreen under Controls → Software
-- `HOME_ADDRESS` and `WORK_ADDRESS` — used when you say "home" or "work"
-- `GROQ_API_KEY` — free from [console.groq.com](https://console.groq.com)
-- `SIRI_SECRET` — any random string to protect your endpoints
-- `CONTACT_<NAME>=<phone>` — e.g. `CONTACT_PRIYA=+44...` for SMS notifications
+Fill in:
+- `TESLA_CLIENT_ID` and `TESLA_CLIENT_SECRET` — from [developer.tesla.com](https://developer.tesla.com) → your app
+- `TESLA_VIN` — Tesla touchscreen → Controls → Software → Additional Vehicle Info
+- `GROQ_API_KEY` — from [console.groq.com](https://console.groq.com) (free, no credit card)
+- `SIRI_SECRET` — any random string (acts as your password)
+- `HOME_ADDRESS` and `WORK_ADDRESS` — full address with city and country
+- `CONTACT_PRIYA=+44...` — rename to your contact, used for ETA SMS
 
 ### 3. Generate Tesla key pair
 
@@ -91,103 +96,325 @@ Open `.env` and fill in:
 node generate-keys.mjs
 ```
 
-Creates `tesla-public.pem` and `tesla-private.pem`. The public key is served at `/.well-known/appspecific/com.tesla.3p.public-key.pem` — Tesla verifies it during partner registration.
+Creates `tesla-public.pem` and `tesla-private.pem`. Keep both files safe — never commit them.
 
-> `tesla-private.pem` is in `.gitignore` — never commit it.
-
-### 4. Get Tesla tokens
-
-Get a partner token and print the OAuth URL:
+### 4. Get your Tesla tokens
 
 ```bash
 node get-tesla-token.mjs
 ```
 
-Open the printed URL in your browser, log in with your Tesla account, approve permissions. Tesla redirects to `http://localhost:5431/mcp?code=XXXX` — copy the `code=` value.
-
-Exchange it for your user tokens:
+Open the URL it prints in your browser. Log in with your Tesla account and approve permissions. Tesla redirects to `http://localhost:5431/mcp?code=XXXX` — the page won't load, just copy the `code=` value from the URL bar.
 
 ```bash
 node exchange-code.mjs PASTE_CODE_HERE
 ```
 
-This writes `TESLA_ACCESS_TOKEN` and `TESLA_REFRESH_TOKEN` to `.env`. Tokens auto-refresh every 6 hours.
+This writes `TESLA_REFRESH_TOKEN` to your `.env`. You will need this for Railway.
 
-### 5. Deploy to Railway
+---
 
-**Option A — GitHub (recommended):**
+## Part 2 — Railway deployment
 
-1. Push your repo to GitHub (make sure `.env` and `*.pem` are in `.gitignore`)
-2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-3. Select your repo
-4. Add all environment variables from your `.env` in Railway's Variables tab:
-   - Copy every variable from `.env`, including `TESLA_REFRESH_TOKEN`
-   - **Critical**: `TESLA_REFRESH_TOKEN` is how the server authenticates after restarts
-5. Railway auto-detects `railway.toml` and builds + starts the server
+### 5. Push to GitHub
 
-**Option B — Railway CLI:**
+Make sure `.gitignore` excludes `.env` and `*.pem`, then push your repo.
 
-```bash
-npm install -g @railway/cli
-railway login
-railway init
-railway up
-```
+### 6. Create Railway project
 
-After deployment, your app URL will be `https://your-app.railway.app`.
+1. Go to [railway.app](https://railway.app) → **New Project** → **Deploy from GitHub repo**
+2. Select your `tesla-siri` repository
+3. Railway detects `railway.toml` and configures the build automatically
 
-### 6. Register with Tesla
+### 7. Set environment variables in Railway
 
-Once the server is live, register your Railway domain with Tesla:
+Go to your project → **Variables** → add each one:
+
+| Variable | Value |
+|---|---|
+| `TESLA_CLIENT_ID` | from developer.tesla.com |
+| `TESLA_CLIENT_SECRET` | from developer.tesla.com |
+| `TESLA_VIN` | your car's VIN |
+| `TESLA_REFRESH_TOKEN` | from your `.env` after step 4 |
+| `GROQ_API_KEY` | from console.groq.com |
+| `SIRI_SECRET` | your chosen password string |
+| `TESLA_PUBLIC_KEY` | paste the **entire contents** of `tesla-public.pem` |
+| `HOME_ADDRESS` | `123 Your Street, City, Country` |
+| `WORK_ADDRESS` | optional |
+| `CONTACT_PRIYA` | phone number e.g. `+44791234567` |
+
+> **`TESLA_PUBLIC_KEY`** — open `tesla-public.pem` in a text editor, select all (including `-----BEGIN PUBLIC KEY-----` header/footer lines), paste as the variable value.
+
+Railway auto-deploys after you save variables. Your app URL is `https://your-app.railway.app`.
+
+### 8. Register with Tesla
+
+Run locally once (swap in your actual Railway domain):
 
 ```bash
 node get-tesla-token.mjs your-app.railway.app
 ```
 
-This tells Tesla where to find your public key and allow API calls from your domain.
-
-In the **Tesla Developer Portal**, add your Railway URL to **Allowed Origins**.
-
-### 7. Complete Vehicle Command Protocol (VCP) setup
-
-For climate, charging, and window commands, Tesla requires key pairing:
-
-1. Make sure your Railway server is running
-2. Open the **Tesla mobile app**
-3. Go to **Security & Privacy → Manage Third-Party Apps**
-4. Find your app → **Grant Access**
-
-Navigation, horn, lights, lock/unlock, and status commands work without VCP.
-
-### 8. Test locally
-
-```bash
-npm run dev:siri
+Then in the [Tesla Developer Portal](https://developer.tesla.com) → your app → **Allowed Origins**, add:
+```
+https://your-app.railway.app
 ```
 
-Dashboard at `http://localhost:3000`. Test AI at `http://localhost:3000/api/test-ai`.
+### 9. VCP key pairing (for climate / charging / windows)
+
+1. Open the **Tesla mobile app**
+2. Go to **Security & Privacy → Manage Third-Party Apps**
+3. Find your app → tap **Grant Access**
+
+> Lock/unlock, horn, lights, flash, navigation, and status all work without VCP. Climate, charging, temperature, and windows require it.
 
 ---
 
-## Siri Shortcut setup (iPhone)
+## Part 3 — Siri Shortcut
 
-Create a shortcut named **"Car"** (so you say *"Hey Siri, Car, let's go home"*):
+Create a shortcut named **"Car"** so you say *"Hey Siri, Car, lock the doors"*.
 
 | Step | Action | Settings |
 |---|---|---|
 | 1 | **Dictate Text** | Language: your language |
-| 2 | **Get Contents of URL** | URL: `https://your-app.railway.app/chat?secret=<SIRI_SECRET>` · Method: POST · Body: JSON · Fields: `message` = Dictated Text, `session` = `siri-main` |
-| 3 | **Get Dictionary Value** | Key: `reply` · From: Contents of URL |
-| 4 | **Get Dictionary Value** | Key: `sms_to` · From: Contents of URL |
-| 5 | **Get Dictionary Value** | Key: `sms_body` · From: Contents of URL |
-| 6 | **If** `sms_to` has any value → **Send Message** (Message: `sms_body`, Recipients: `sms_to`) · **End If** |
-| 7 | **Speak** `reply` |
+| 2 | **Get Contents of URL** | URL: `https://your-app.railway.app/chat?secret=SIRI_SECRET` · Method: POST · Body: JSON |
+| | | Field `message` = Dictated Text |
+| | | Field `session` = `siri-main` |
+| 3 | **Get Dictionary Value** | Key: `reply` from Contents of URL |
+| 4 | **Get Dictionary Value** | Key: `sms_to` from Contents of URL |
+| 5 | **Get Dictionary Value** | Key: `sms_body` from Contents of URL |
+| 6 | **If** `sms_to` has any value | → **Send Message** (body: `sms_body`, to: `sms_to`) → **End If** |
+| 7 | **Speak** `reply` | |
+
+---
+
+## Part 4 — HomeKit via Homebridge
+
+Homebridge runs on any always-on device (Raspberry Pi, Mac Mini, NAS). It reads your Railway server's `/homekit/*` endpoints and exposes your Tesla as native HomeKit accessories.
+
+### Install Homebridge
+
+```bash
+# On Raspberry Pi or Mac
+sudo npm install -g homebridge homebridge-http-switch
+```
+
+Then visit `http://your-homebridge-ip:8581` to open the Homebridge UI.
+
+### Install required plugins
+
+In the Homebridge UI → **Plugins**, search and install:
+- `homebridge-http-switch` — for lock, climate, sentry, charging
+- `homebridge-http-thermostat` — for temperature control
+
+Or via CLI:
+```bash
+sudo npm install -g homebridge-http-switch homebridge-http-thermostat
+```
+
+### Homebridge `config.json`
+
+Open Homebridge UI → **Config** and add this to the `accessories` array. Replace `YOUR_APP` and `YOUR_SECRET` with your values.
+
+```json
+{
+  "accessories": [
+    {
+      "accessory": "HTTP-SWITCH",
+      "name": "Tesla Lock",
+      "switchType": "stateful",
+      "statusUrl": "https://YOUR_APP.railway.app/homekit/lock?secret=YOUR_SECRET",
+      "onUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/lock/lock?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "offUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/lock/unlock?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "statusPattern": "\"value\":1"
+    },
+    {
+      "accessory": "HTTP-SWITCH",
+      "name": "Tesla Climate",
+      "switchType": "stateful",
+      "statusUrl": "https://YOUR_APP.railway.app/homekit/climate?secret=YOUR_SECRET",
+      "onUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/climate/on?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "offUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/climate/off?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "statusPattern": "\"value\":1"
+    },
+    {
+      "accessory": "HTTP-SWITCH",
+      "name": "Tesla Sentry",
+      "switchType": "stateful",
+      "statusUrl": "https://YOUR_APP.railway.app/homekit/sentry?secret=YOUR_SECRET",
+      "onUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/sentry/on?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "offUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/sentry/off?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "statusPattern": "\"value\":1"
+    },
+    {
+      "accessory": "HTTP-SWITCH",
+      "name": "Tesla Charging",
+      "switchType": "stateful",
+      "statusUrl": "https://YOUR_APP.railway.app/homekit/charging?secret=YOUR_SECRET",
+      "onUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/charging/on?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "offUrl": {
+        "url": "https://YOUR_APP.railway.app/homekit/charging/off?secret=YOUR_SECRET",
+        "method": "POST"
+      },
+      "statusPattern": "\"value\":1"
+    },
+    {
+      "accessory": "HTTP-Thermostat",
+      "name": "Tesla Temperature",
+      "getCurrentTemperatureUrl": "https://YOUR_APP.railway.app/homekit/temperature?secret=YOUR_SECRET",
+      "getCurrentTemperatureJsonPath": "current",
+      "getTargetTemperatureUrl": "https://YOUR_APP.railway.app/homekit/temperature?secret=YOUR_SECRET",
+      "getTargetTemperatureJsonPath": "target",
+      "setTargetTemperatureUrl": "https://YOUR_APP.railway.app/homekit/temperature?secret=YOUR_SECRET",
+      "setTargetTemperatureMethod": "POST",
+      "setTargetTemperatureBody": "{\"value\": %s}",
+      "minTemp": 15,
+      "maxTemp": 30
+    }
+  ]
+}
+```
+
+After saving, restart Homebridge. Your Tesla accessories appear in the Home app within a minute.
+
+> **Tip:** Add your Tesla accessories to a **"Driving"** scene in the Home app: lock + sentry on + climate off — one tap before leaving.
+
+---
+
+## Part 5 — End-to-end tests
+
+Run these in order after deploying. Replace `YOUR_APP` and `YOUR_SECRET` throughout.
+
+### Test 1 — Server health
+
+```bash
+curl https://YOUR_APP.railway.app/health
+```
+
+Expected:
+```json
+{"status":"ok","vin":"5YJ...","ai":"groq (llama-3.3-70b-versatile → fallback chain)","token_type":"user","token_status":"valid (expires in 480m)"}
+```
+
+`token_type` must be `"user"` — if it shows `"partner"`, your `TESLA_REFRESH_TOKEN` env var is missing or expired.
+
+### Test 2 — Groq AI
+
+```bash
+curl https://YOUR_APP.railway.app/api/test-ai
+```
+
+Expected: `test_results` showing `status: 200` and a response from at least one Groq model.
+
+### Test 3 — Vehicle data
+
+```bash
+curl "https://YOUR_APP.railway.app/api/status?secret=YOUR_SECRET"
+```
+
+Expected: JSON with `battery`, `range_mi`, `locked`, `climate_on`, etc.
+
+### Test 4 — AI command via chat
+
+```bash
+curl -X POST "https://YOUR_APP.railway.app/chat?secret=YOUR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"what is my battery level","session":"test"}'
+```
+
+Expected: `{"reply":"🔋 80% · 240 mi range...","session":"test"}`
+
+### Test 5 — Direct command
+
+```bash
+curl -X POST "https://YOUR_APP.railway.app/api/command?secret=YOUR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"cmd":"lock my car"}'
+```
+
+Expected: `{"reply":"✅ Doors locked"}`
+
+### Test 6 — HomeKit lock status
+
+```bash
+curl "https://YOUR_APP.railway.app/homekit/lock?secret=YOUR_SECRET"
+```
+
+Expected: `{"value":1}` (locked) or `{"value":0}` (unlocked)
+
+### Test 7 — HomeKit climate toggle
+
+```bash
+# Turn climate on
+curl -X POST "https://YOUR_APP.railway.app/homekit/climate/on?secret=YOUR_SECRET"
+# Expected: {"value":1}
+
+# Check status (wait a few seconds)
+curl "https://YOUR_APP.railway.app/homekit/climate?secret=YOUR_SECRET"
+# Expected: {"value":1}
+
+# Turn it back off
+curl -X POST "https://YOUR_APP.railway.app/homekit/climate/off?secret=YOUR_SECRET"
+```
+
+### Test 8 — Dashboard
+
+Open in browser:
+```
+https://YOUR_APP.railway.app/?secret=YOUR_SECRET
+```
+
+Should show the live battery gauge, climate card, and quick controls.
+
+### Test 9 — Siri Shortcut
+
+On your iPhone, run the shortcut and say: **"what's my battery"**
+
+Siri should speak something like: *"Battery: 80%, 240 miles range."*
+
+### Test 10 — HomeKit in Home app
+
+1. Open the **Home** app on iPhone
+2. Find **Tesla Climate** tile
+3. Tap to toggle on → check Tesla app that climate started
+4. Tap again to turn off
+
+### Test 11 — Macro (no AI)
+
+```bash
+curl -X POST "https://YOUR_APP.railway.app/chat?secret=YOUR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"warm up the car","session":"test"}'
+```
+
+Expected: `{"reply":"Climate on and temperature set to 22°."}` — this fires instantly without calling Groq.
 
 ---
 
 ## Custom macros
 
-Macros are instant multi-action phrases — no AI needed. Edit `MACROS` in `src/siri-server.ts`:
+Edit the `MACROS` object in `src/siri-server.ts` to add instant multi-action phrases:
 
 ```typescript
 "saturday drive": {
@@ -195,42 +422,65 @@ Macros are instant multi-action phrases — no AI needed. Edit `MACROS` in `src/
     { tool: 'start_climate',   params: {} },
     { tool: 'set_temperature', params: { tempC: 20 } },
   ],
-  reply: "Car is warming up for your drive.",
+  reply: "Car is warming up for your Saturday drive.",
 },
 ```
 
-Rebuild and redeploy after changes.
+Push to GitHub → Railway redeploys automatically.
 
 ---
 
-## Adding contacts
-
-In Railway Variables (or `.env`), add one line per contact:
-
-```
-CONTACT_PRIYA=Priya
-CONTACT_MOM=+41791234567
-CONTACT_OFFICE=office@example.com
-```
-
-Use a phone number for SMS, a name for iMessage lookup. The name (before `=`) is what you say: "tell Priya I'm on my way".
-
----
-
-## API endpoints
+## API reference
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/` | GET | SIRI_SECRET | Live dashboard |
-| `/chat` | POST | SIRI_SECRET | Conversational AI + macros (Siri target) |
-| `/siri` | GET/POST | SIRI_SECRET | Single-shot command (`?cmd=lock`) |
-| `/api/status` | GET | SIRI_SECRET | Raw vehicle JSON |
-| `/api/command` | POST | SIRI_SECRET | Run a command from dashboard |
-| `/api/test-ai` | GET | none | Test Groq AI connectivity |
 | `/health` | GET | none | Server + token status |
 | `/commands` | GET | none | List all tools and aliases |
+| `/api/test-ai` | GET | none | Test Groq model connectivity |
+| `/` | GET | secret | Live dashboard |
+| `/chat` | POST | secret | AI + macro dispatch (Siri shortcut target) |
+| `/siri` | GET/POST | secret | Single-shot command (`?cmd=lock`) |
+| `/api/status` | GET | secret | Raw vehicle JSON |
+| `/api/command` | POST | secret | Run a command |
+| `/homekit/lock` | GET | secret | Lock status `{"value":0/1}` |
+| `/homekit/lock/lock` | POST | secret | Lock doors |
+| `/homekit/lock/unlock` | POST | secret | Unlock doors |
+| `/homekit/climate` | GET | secret | Climate status |
+| `/homekit/climate/on` | POST | secret | Start climate |
+| `/homekit/climate/off` | POST | secret | Stop climate |
+| `/homekit/sentry` | GET | secret | Sentry status |
+| `/homekit/sentry/on` | POST | secret | Enable sentry |
+| `/homekit/sentry/off` | POST | secret | Disable sentry |
+| `/homekit/charging` | GET | secret | Charging status |
+| `/homekit/charging/on` | POST | secret | Start charging |
+| `/homekit/charging/off` | POST | secret | Stop charging |
+| `/homekit/temperature` | GET | secret | `{"current":21.5,"target":22}` |
+| `/homekit/temperature` | POST | secret | Set temp — body `{"value":22}` |
+| `/homekit/battery` | GET | secret | Battery % `{"value":80}` |
 
-Auth: pass `?secret=<SIRI_SECRET>` or header `x-siri-secret: <SIRI_SECRET>`.
+**Auth:** pass `?secret=SIRI_SECRET` as query param, or header `x-siri-secret: SIRI_SECRET`.
+
+---
+
+## Troubleshooting
+
+**`token_type` is `"partner"` not `"user"`**
+`TESLA_REFRESH_TOKEN` is missing or expired. Re-run steps 3–4 locally to get a fresh token, then update the Railway env var and redeploy.
+
+**AI not responding**
+Check `GROQ_API_KEY` is set in Railway Variables. Hit `/api/test-ai` to see which models respond.
+
+**403 Vehicle Command Protocol required**
+Complete VCP key pairing (Part 1 step 9). Navigation, lock, horn, and lights work without it.
+
+**HomeKit accessories show "No Response"**
+Check the Homebridge logs. Make sure the Railway URL and `SIRI_SECRET` in your Homebridge config match exactly.
+
+**Public key 404 on Tesla registration**
+`TESLA_PUBLIC_KEY` env var not set in Railway, or server hasn't deployed yet. Check Railway logs.
+
+**"Could not find location"**
+`HOME_ADDRESS` or `WORK_ADDRESS` needs to be a full address: `123 Street, City, Country`.
 
 ---
 
@@ -239,40 +489,19 @@ Auth: pass `?secret=<SIRI_SECRET>` or header `x-siri-secret: <SIRI_SECRET>`.
 ```
 tesla-siri/
 ├── src/
-│   ├── siri-server.ts      Main server — Express, Groq AI, macros, /chat, dashboard
+│   ├── siri-server.ts      Main server — Groq AI, macros, /chat, /homekit, dashboard
 │   ├── index.ts            MCP server (Claude Desktop integration)
-│   ├── tools/
-│   │   └── index.ts        Tesla tool definitions (19 tools)
+│   ├── tools/index.ts      19 Tesla tool definitions
 │   └── utils/
 │       ├── tesla-client.ts Tesla Fleet API HTTP client
-│       └── token-manager.ts OAuth token lifecycle (refresh, persist)
-├── get-tesla-token.mjs     Partner token + Tesla registration
-├── exchange-code.mjs       Auth code → user token exchange
-├── generate-keys.mjs       EC key pair generation for VCP
-├── railway.toml            Railway deployment config
+│       └── token-manager.ts OAuth token lifecycle
+├── get-tesla-token.mjs     One-time: partner token + Tesla registration
+├── exchange-code.mjs       One-time: auth code → user tokens
+├── generate-keys.mjs       One-time: EC key pair for VCP
+├── railway.toml            Railway build + start config
 ├── CLAUDE.md               Project memory for Claude Code
-├── .env.example            Environment template
-└── tsconfig.json
+└── .env.example            Environment variable template
 ```
-
----
-
-## Troubleshooting
-
-**AI not responding / "I didn't catch that"**
-Visit `/api/test-ai` to check Groq connectivity. Ensure `GROQ_API_KEY` is set.
-
-**403: Tesla Vehicle Command Protocol required**
-Complete VCP key pairing in the Tesla app (Setup step 7). Navigation and basic commands still work without it.
-
-**Token expired / login_required**
-Run `node get-tesla-token.mjs` and `node exchange-code.mjs <code>` locally to get fresh tokens, then update `TESLA_REFRESH_TOKEN` in Railway Variables.
-
-**"Could not find location"**
-Check `HOME_ADDRESS` and `WORK_ADDRESS` are full addresses with city and country.
-
-**Public key 404**
-`tesla-public.pem` not found. Run `node generate-keys.mjs` and ensure `TESLA_PUBLIC_KEY_FILE` points to it (or set the file path in Railway).
 
 ---
 

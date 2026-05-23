@@ -53,6 +53,25 @@ railway.toml            Railway deployment config
 | `GET /health` | none | Server + token status |
 | `GET /commands` | none | List tools + aliases |
 | `GET /.well-known/appspecific/com.tesla.3p.public-key.pem` | none | VCP public key |
+| `GET /homekit/lock` | SIRI_SECRET | Lock status `{"value":0/1}` |
+| `POST /homekit/lock/lock` | SIRI_SECRET | Lock doors |
+| `POST /homekit/lock/unlock` | SIRI_SECRET | Unlock doors |
+| `GET /homekit/climate` | SIRI_SECRET | Climate on/off status |
+| `POST /homekit/climate/on` | SIRI_SECRET | Start climate |
+| `POST /homekit/climate/off` | SIRI_SECRET | Stop climate |
+| `GET /homekit/sentry` | SIRI_SECRET | Sentry status |
+| `POST /homekit/sentry/on\|off` | SIRI_SECRET | Toggle sentry |
+| `GET /homekit/charging` | SIRI_SECRET | Charging status |
+| `POST /homekit/charging/on\|off` | SIRI_SECRET | Toggle charging |
+| `GET /homekit/temperature` | SIRI_SECRET | `{"current":21.5,"target":22}` |
+| `POST /homekit/temperature` | SIRI_SECRET | Set temp `{"value":22}` |
+| `GET /homekit/battery` | SIRI_SECRET | Battery % `{"value":80}` |
+
+## HomeKit notes
+- Homebridge polls `/homekit/*` endpoints every ~3s; a 60s in-process cache prevents waking the sleeping car
+- Cache is invalidated immediately after any command
+- Use `homebridge-http-switch` for lock/climate/sentry/charging, `homebridge-http-thermostat` for temperature
+- `statusPattern: "\"value\":1"` in homebridge-http-switch config matches the response format
 
 ## Token management
 - `TESLA_REFRESH_TOKEN` in env → used on startup to get access token

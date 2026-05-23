@@ -34,7 +34,70 @@ const WORK_ADDRESS = process.env.WORK_ADDRESS ?? null
 
 const tesla = new TeslaClient(VIN)
 
-// ── Tool lookup ───────────────────────────────────────────────────────────────
+// ── Vehicle status cache (shared by dashboard + HomeKit polling) ──────────────
+// Avoids waking a sleeping car on every Homebridge poll.
+
+interface StatusCache {
+  state:        string
+  locked:       boolean
+  sentry:       boolean
+  climate_on:   boolean
+  inside_temp:  number | null
+  outside_temp: number | null
+  set_temp:     number
+  battery:      number
+  charging:     boolean
+  timestamp:    number
+}
+
+let _statusCache: StatusCache | null = null
+const STATUS_CACHE_TTL_MS = 60_000   // refresh at most once per minute
+
+function defaultStatus(): StatusCache {
+  return { state: 'unknown', locked: true, sentry: false, climate_on: false,
+           inside_temp: null, outside_temp: null, set_temp: 20,
+           battery: 0, charging: false, timestamp: 0 }
+}
+
+async function getStatusCached(): Promise<StatusCache> {
+  if (_statusCache && Date.now() - _statusCache.timestamp < STATUS_CACHE_TTL_MS) {
+    return _statusCache
+  }
+  try {
+    // Lightweight check — does not wake the vehicle
+    const basic = await tesla.getVehicle()
+    const state = basic.body?.response?.state ?? 'unknown'
+    if (state !== 'online') {
+      // Return cached data with updated state (car is asleep — don't wake it)
+      return { ...(_statusCache ?? defaultStatus()), state, timestamp: Date.now() }
+    }
+    const raw = await tesla.getVehicleData()
+    if (raw.status >= 400) return _statusCache ?? defaultStatus()
+    const d  = raw.body?.response ?? {}
+    const cs = d.charge_state   ?? {}
+    const cl = d.climate_state  ?? {}
+    const vs = d.vehicle_state  ?? {}
+    _statusCache = {
+      state,
+      locked:       vs.locked          ?? true,
+      sentry:       vs.sentry_mode     ?? false,
+      climate_on:   cl.is_climate_on   ?? false,
+      inside_temp:  cl.inside_temp     ?? null,
+      outside_temp: cl.outside_temp    ?? null,
+      set_temp:     cl.driver_temp_setting ?? 20,
+      battery:      cs.battery_level   ?? 0,
+      charging:     (cs.charging_state ?? '') === 'Charging',
+      timestamp:    Date.now(),
+    }
+    return _statusCache
+  } catch {
+    return _statusCache ?? defaultStatus()
+  }
+}
+
+function invalidateStatusCache() { _statusCache = null }
+
+
 
 const toolMap: Record<string, typeof tools[number]> = {}
 for (const t of tools) toolMap[t.name] = t
@@ -1205,6 +1268,51 @@ loadData();
 </script>
 </body>
 </html>`
+
+// ── /homekit — Homebridge HTTP bridge ────────────────────────────────────────
+// Use with homebridge-http-switch (npm i -g homebridge-http-switch).
+// All status endpoints return {"value":1} (on/true) or {"value":0} (off/false).
+// Command endpoints wake the car and invalidate the cache.
+
+// Lock
+app.get('/homekit/lock',           requireAuth, async (_req, res) => { const s = await getStatusCached(); res.json({ value: s.locked   ? 1 : 0 }) })
+app.post('/homekit/lock/lock',     requireAuth, async (_req, res) => { try { await toolMap['lock_doors']?.handler({}, tesla) }   catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 1 }) })
+app.post('/homekit/lock/unlock',   requireAuth, async (_req, res) => { try { await toolMap['unlock_doors']?.handler({}, tesla) } catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 0 }) })
+
+// Climate (switch)
+app.get('/homekit/climate',        requireAuth, async (_req, res) => { const s = await getStatusCached(); res.json({ value: s.climate_on ? 1 : 0 }) })
+app.post('/homekit/climate/on',    requireAuth, async (_req, res) => { try { await toolMap['start_climate']?.handler({}, tesla) } catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 1 }) })
+app.post('/homekit/climate/off',   requireAuth, async (_req, res) => { try { await toolMap['stop_climate']?.handler({}, tesla) }  catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 0 }) })
+
+// Sentry (switch)
+app.get('/homekit/sentry',         requireAuth, async (_req, res) => { const s = await getStatusCached(); res.json({ value: s.sentry ? 1 : 0 }) })
+app.post('/homekit/sentry/on',     requireAuth, async (_req, res) => { try { await toolMap['set_sentry_mode']?.handler({ on: true },  tesla) } catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 1 }) })
+app.post('/homekit/sentry/off',    requireAuth, async (_req, res) => { try { await toolMap['set_sentry_mode']?.handler({ on: false }, tesla) } catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 0 }) })
+
+// Charging (switch)
+app.get('/homekit/charging',       requireAuth, async (_req, res) => { const s = await getStatusCached(); res.json({ value: s.charging ? 1 : 0 }) })
+app.post('/homekit/charging/on',   requireAuth, async (_req, res) => { try { await toolMap['start_charging']?.handler({}, tesla) } catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 1 }) })
+app.post('/homekit/charging/off',  requireAuth, async (_req, res) => { try { await toolMap['stop_charging']?.handler({}, tesla) }  catch {/* non-fatal */}; invalidateStatusCache(); res.json({ value: 0 }) })
+
+// Temperature (thermostat — current + target)
+app.get('/homekit/temperature', requireAuth, async (_req, res) => {
+  const s = await getStatusCached()
+  res.json({ current: s.inside_temp ?? s.set_temp, target: s.set_temp })
+})
+app.post('/homekit/temperature', requireAuth, async (req, res) => {
+  const tempC = parseFloat(req.body?.value ?? '20')
+  try { await toolMap['set_temperature']?.handler({ tempC }, tesla) } catch {/* non-fatal */}
+  invalidateStatusCache()
+  res.json({ value: tempC })
+})
+
+// Battery % (read-only — map to humidity sensor in HomeKit)
+app.get('/homekit/battery', requireAuth, async (_req, res) => {
+  const s = await getStatusCached()
+  res.json({ value: s.battery })
+})
+
+// ── / — Tesla Live Dashboard ─────────────────────────────────────────────────
 
 app.get('/', requireAuth, (_req, res) => {
   res.type('text/html').send(DASHBOARD_HTML)
