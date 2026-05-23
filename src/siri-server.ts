@@ -1318,6 +1318,93 @@ app.get('/', requireAuth, (_req, res) => {
   res.type('text/html').send(DASHBOARD_HTML)
 })
 
+// ── /oauth — Phone-friendly Tesla token setup (no laptop needed) ──────────────
+// Step 1: open /oauth/start in browser → logs in to Tesla
+// Step 2: Tesla redirects to /oauth/callback → page shows your TESLA_REFRESH_TOKEN
+// Step 3: copy the token → paste into Railway Variables → redeploy
+
+const OAUTH_SCOPES = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds'
+
+app.get('/oauth/start', (_req, res) => {
+  if (!process.env.TESLA_CLIENT_ID) {
+    res.status(500).send('TESLA_CLIENT_ID env var not set in Railway.')
+    return
+  }
+  const redirectUri = process.env.TESLA_REDIRECT_URI
+    ?? `https://${_req.headers.host}/oauth/callback`
+  const url = new URL('https://auth.tesla.com/oauth2/v3/authorize')
+  url.searchParams.set('response_type', 'code')
+  url.searchParams.set('client_id',     process.env.TESLA_CLIENT_ID!)
+  url.searchParams.set('redirect_uri',  redirectUri)
+  url.searchParams.set('scope',         OAUTH_SCOPES)
+  url.searchParams.set('state',         'tesla-siri-setup')
+  console.log('[oauth] Redirecting to Tesla auth page')
+  res.redirect(url.toString())
+})
+
+app.get('/oauth/callback', async (req, res) => {
+  const code = (req.query.code ?? '').toString()
+  if (!code) {
+    res.status(400).send('<h2>Missing ?code= — did you arrive here from Tesla?</h2>')
+    return
+  }
+  const redirectUri = process.env.TESLA_REDIRECT_URI
+    ?? `https://${req.headers.host}/oauth/callback`
+  try {
+    const body = new URLSearchParams({
+      grant_type:    'authorization_code',
+      client_id:     process.env.TESLA_CLIENT_ID!,
+      client_secret: process.env.TESLA_CLIENT_SECRET!,
+      code,
+      redirect_uri:  redirectUri,
+    })
+    const r = await fetch('https://auth.tesla.com/oauth2/v3/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    body.toString(),
+    })
+    const data = await r.json() as any
+    if (!r.ok) {
+      res.status(400).send(`<pre>Token exchange failed:\n${JSON.stringify(data, null, 2)}</pre>`)
+      return
+    }
+    const { refresh_token, expires_in } = data
+    console.log('[oauth] Token exchange successful')
+    res.type('text/html').send(`<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tesla OAuth — Done</title>
+<style>
+  body{font-family:-apple-system,sans-serif;max-width:540px;margin:40px auto;padding:16px;background:#0a0a0c;color:#f0f0f5}
+  h2{color:#30d158}code,textarea{background:#1a1a20;color:#f0f0f5;border:1px solid #2a2a35;border-radius:8px;padding:10px;width:100%;box-sizing:border-box;font-size:13px;word-break:break-all}
+  textarea{height:100px;resize:none}
+  .step{background:#16161c;border:1px solid #2a2a35;border-radius:12px;padding:16px;margin:16px 0}
+  .step h3{margin:0 0 8px;font-size:15px}p{font-size:14px;color:#888899;line-height:1.5}
+  button{background:#E8001A;color:#fff;border:none;padding:12px 20px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px}
+</style></head><body>
+<h2>✅ Tesla login successful!</h2>
+<p>Follow these 3 steps to finish setup:</p>
+<div class="step">
+  <h3>Step 1 — Copy your Refresh Token</h3>
+  <p>Long-press the box below and select all, then copy:</p>
+  <textarea id="rt" readonly>${refresh_token}</textarea>
+  <button onclick="navigator.clipboard?.writeText(document.getElementById('rt').value).then(()=>this.textContent='Copied!')">Copy Token</button>
+</div>
+<div class="step">
+  <h3>Step 2 — Add to Railway</h3>
+  <p>Go to <strong>railway.app → your project → Variables</strong> and set:<br><br>
+  <code>TESLA_REFRESH_TOKEN = &lt;paste here&gt;</code></p>
+</div>
+<div class="step">
+  <h3>Step 3 — Redeploy</h3>
+  <p>In Railway, click <strong>Deploy</strong> (or push a commit). The server will use the new token on startup.</p>
+  <p style="color:#ffd60a">Token expires in ${Math.round(expires_in / 3600)}h — the server auto-refreshes it every 6h.</p>
+</div>
+</body></html>`)
+  } catch (err: any) {
+    res.status(500).send(`<pre>Error: ${err.message}</pre>`)
+  }
+})
+
 app.listen(PORT, async () => {
   console.log('[tesla-siri] Server running on port ' + PORT)
   console.log('[tesla-siri] AI mode: ' + (GROQ_KEY ? 'Groq/Llama (natural language)' : 'Keyword aliases'))

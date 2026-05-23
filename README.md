@@ -60,11 +60,13 @@ Home app / Hey Siri (native HomeKit)
 - **Tesla Developer account** — [developer.tesla.com](https://developer.tesla.com) (free)
 - **Groq API key** (free) — [console.groq.com](https://console.groq.com)
 - **Railway account** (free tier) — [railway.app](https://railway.app)
-- **Node.js 18+** installed locally — only needed for the one-time token setup
+- **GitHub account** — to fork the repo and link to Railway
+
+> **No laptop?** Follow the [Phone-only setup](#phone-only-setup-no-laptop-needed) section below.
 
 ---
 
-## Part 1 — One-time local setup
+## Part 1 — One-time setup (with a laptop)
 
 These steps run on your machine once. After this, everything lives on Railway.
 
@@ -114,7 +116,91 @@ This writes `TESLA_REFRESH_TOKEN` to your `.env`. You will need this for Railway
 
 ---
 
-## Part 2 — Railway deployment
+## Phone-only setup (no laptop needed)
+
+You can do the entire setup from an iPhone using **GitHub Codespaces** (free, runs in Safari) for the key generation step, and a built-in OAuth flow on your Railway server for the token step.
+
+### Phone Step 1 — Fork the repo on GitHub
+
+On your iPhone, go to the GitHub repo page and tap **Fork**. This gives you your own copy to link to Railway.
+
+### Phone Step 2 — Create a GitHub Codespace (for key generation only)
+
+1. On your fork page, tap **Code** → **Codespaces** → **Create codespace on main**
+2. Wait ~60 seconds for it to load (it's a full VS Code in your browser)
+3. In the terminal at the bottom, run:
+
+```bash
+node generate-keys.mjs
+```
+
+4. Run this to display the public key:
+
+```bash
+cat tesla-public.pem
+```
+
+5. Select all the output (including the `-----BEGIN PUBLIC KEY-----` lines) and copy it
+6. Keep this tab open — you'll set it as `TESLA_PUBLIC_KEY` in Railway shortly
+
+> GitHub gives you 60 free Codespace hours per month. You only need it for about 5 minutes.
+
+### Phone Step 3 — Set up Railway
+
+1. Go to [railway.app](https://railway.app) on your phone and sign up with GitHub
+2. **New Project** → **Deploy from GitHub repo** → select your fork
+3. Railway detects `railway.toml` automatically
+4. Go to **Variables** and add:
+
+| Variable | Value |
+|---|---|
+| `TESLA_CLIENT_ID` | from developer.tesla.com |
+| `TESLA_CLIENT_SECRET` | from developer.tesla.com |
+| `TESLA_VIN` | your VIN (Tesla app → About) |
+| `GROQ_API_KEY` | from console.groq.com |
+| `SIRI_SECRET` | any password string |
+| `TESLA_PUBLIC_KEY` | paste what you copied from the Codespace |
+| `TESLA_REDIRECT_URI` | `https://YOUR-APP.railway.app/oauth/callback` |
+| `HOME_ADDRESS` | `123 Your Street, City, Country` |
+| `WORK_ADDRESS` | optional |
+
+5. Also go to **developer.tesla.com** → your app → **Allowed Redirect URIs** → add `https://YOUR-APP.railway.app/oauth/callback`
+
+6. Railway auto-deploys once variables are saved. Wait ~2 minutes.
+
+### Phone Step 4 — Get your Tesla refresh token (from the phone)
+
+1. Once deployed, open in Safari: `https://YOUR-APP.railway.app/oauth/start`
+2. This redirects you to Tesla's login page
+3. Log in with your Tesla account and approve permissions
+4. Tesla redirects back to your Railway app at `/oauth/callback`
+5. **A page appears showing your `TESLA_REFRESH_TOKEN`** — copy it
+
+6. Go back to Railway → Variables → add:
+
+| Variable | Value |
+|---|---|
+| `TESLA_REFRESH_TOKEN` | paste the token from step 5 |
+
+7. In Railway, trigger a redeploy (push a commit, or click **Redeploy**)
+
+### Phone Step 5 — Register with Tesla
+
+In [developer.tesla.com](https://developer.tesla.com) → your app → **Allowed Origins** → add `https://YOUR-APP.railway.app`.
+
+Then run the partner registration. Since you have no laptop, use the Codespace terminal again:
+
+```bash
+node get-tesla-token.mjs YOUR-APP.railway.app
+```
+
+### Phone Step 6 — VCP pairing
+
+Tesla app → **Security & Privacy → Manage Third-Party Apps** → find your app → **Grant Access**.
+
+---
+
+## Part 2 — Railway deployment (with laptop)
 
 ### 5. Push to GitHub
 
@@ -437,6 +523,8 @@ Push to GitHub → Railway redeploys automatically.
 | `/health` | GET | none | Server + token status |
 | `/commands` | GET | none | List all tools and aliases |
 | `/api/test-ai` | GET | none | Test Groq model connectivity |
+| `/oauth/start` | GET | none | Begin Tesla OAuth (phone-friendly setup) |
+| `/oauth/callback` | GET | none | Receives Tesla redirect, shows refresh token |
 | `/` | GET | secret | Live dashboard |
 | `/chat` | POST | secret | AI + macro dispatch (Siri shortcut target) |
 | `/siri` | GET/POST | secret | Single-shot command (`?cmd=lock`) |
