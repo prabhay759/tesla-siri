@@ -1,12 +1,12 @@
 /**
- * Tesla Siri Server — AI-powered via Google Gemini
+ * Tesla Siri Server — AI-powered via Groq (free Llama models)
  *
- * Siri Shortcut sends natural language to /siri
- * Gemini parses intent → correct Tesla tool → runs it → spoken reply
+ * Siri Shortcut sends natural language to /siri or /chat
+ * Groq/Llama parses intent → correct Tesla tool → runs it → spoken reply
  *
- * Fallback: keyword aliases when GEMINI_API_KEY is not set.
+ * Fallback: keyword aliases when GROQ_API_KEY is not set.
  *
- * Setup: add GEMINI_API_KEY to .env (free key at https://aistudio.google.com/apikey)
+ * Setup: add GROQ_API_KEY to .env (free key at https://console.groq.com)
  */
 
 import 'dotenv/config'
@@ -28,7 +28,7 @@ if (missing.length) {
 const VIN          = process.env.TESLA_VIN!
 const PORT         = parseInt(process.env.PORT ?? '3000', 10)
 const SIRI_SECRET  = process.env.SIRI_SECRET ?? null
-const GEMINI_KEY   = process.env.GEMINI_API_KEY ?? null
+const GROQ_KEY     = process.env.GROQ_API_KEY ?? null
 const HOME_ADDRESS = process.env.HOME_ADDRESS ?? null
 const WORK_ADDRESS = process.env.WORK_ADDRESS ?? null
 
@@ -39,7 +39,7 @@ const tesla = new TeslaClient(VIN)
 const toolMap: Record<string, typeof tools[number]> = {}
 for (const t of tools) toolMap[t.name] = t
 
-// ── AI dispatcher (Gemini) ────────────────────────────────────────────────────
+// ── AI dispatcher (Groq — free Llama models) ─────────────────────────────────
 
 const TOOL_LIST = Object.keys(toolMap).join(', ')
 
@@ -113,62 +113,66 @@ interface AIResult {
 }
 
 // Models to try in order — falls back if one is rate-limited (429)
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-flash-latest',
-  'gemini-2.0-flash-001',
+const GROQ_MODELS = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768',
 ]
 
-async function callGemini(model: string, cmd: string): Promise<{ ok: boolean; text?: string; status?: number }> {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
-    {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents: [{ role: 'user', parts: [{ text: cmd }] }],
-        generationConfig: { maxOutputTokens: 512, temperature: 0.1 },
-      }),
-    }
-  )
+async function callGroq(model: string, messages: { role: string; content: string }[]): Promise<{ ok: boolean; text?: string; status?: number }> {
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method:  'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${GROQ_KEY}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      max_tokens:  512,
+      temperature: 0.1,
+    }),
+  })
   const rawBody = await res.text()
   if (!res.ok) {
-    console.error(`[gemini/${model}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`)
+    console.error(`[groq/${model}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`)
     return { ok: false, status: res.status }
   }
   let data: any
   try { data = JSON.parse(rawBody) } catch {
     return { ok: false }
   }
-  const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text
+  const text: string | undefined = data?.choices?.[0]?.message?.content
   if (!text) {
-    console.error(`[gemini/${model}] Empty candidates:`, JSON.stringify(data).slice(0, 200))
+    console.error(`[groq/${model}] Empty response:`, JSON.stringify(data).slice(0, 200))
     return { ok: false }
   }
   return { ok: true, text }
 }
 
-async function parseWithGemini(cmd: string): Promise<AIResult | null> {
-  if (!GEMINI_KEY) return null
-  for (const model of GEMINI_MODELS) {
+async function parseWithAI(cmd: string): Promise<AIResult | null> {
+  if (!GROQ_KEY) return null
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user',   content: cmd },
+  ]
+  for (const model of GROQ_MODELS) {
     try {
-      const result = await callGemini(model, cmd)
+      const result = await callGroq(model, messages)
       if (!result.ok) {
-        if (result.status === 429) { console.warn(`[gemini] ${model} rate-limited, trying next...`); continue }
+        if (result.status === 429) { console.warn(`[groq] ${model} rate-limited, trying next...`); continue }
         return null
       }
       const text = result.text!
-      console.log(`[gemini/${model}] Response: ${text.slice(0, 150)}`)
-      // Strip markdown code fences if Gemini wraps JSON in ```json ... ```
+      console.log(`[groq/${model}] Response: ${text.slice(0, 150)}`)
       const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
       const jsonStr   = jsonMatch ? jsonMatch[1].trim() : text.trim()
       return JSON.parse(jsonStr) as AIResult
     } catch (err) {
-      console.error(`[gemini/${model}] Error:`, err)
+      console.error(`[groq/${model}] Error:`, err)
     }
   }
-  console.error('[gemini] All models failed or rate-limited')
+  console.error('[groq] All models failed or rate-limited')
   return null
 }
 
@@ -381,8 +385,8 @@ async function dispatch(cmd: string): Promise<string> {
     return reply
   }
 
-  // 1 — Try Gemini AI
-  const ai = await parseWithGemini(cmd)
+  // 1 — Try Groq AI
+  const ai = await parseWithAI(cmd)
   if (ai) {
     // Special help tool
     if (ai.tool === '__help__' || ai.tool === 'help') return HELP_TEXT
@@ -432,12 +436,6 @@ async function dispatch(cmd: string): Promise<string> {
 const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
-
-// Bypass ngrok browser-warning for all responses (needed for Tesla public-key fetch)
-app.use((_req, res, next) => {
-  res.setHeader('ngrok-skip-browser-warning', 'true')
-  next()
-})
 
 // Tesla partner public key — NO AUTH
 app.get('/.well-known/appspecific/com.tesla.3p.public-key.pem', (req, res) => {
@@ -490,7 +488,7 @@ app.get('/health', (_req, res) => {
   res.json({
     status:       'ok',
     vin:          VIN,
-    ai:           GEMINI_KEY ? `gemini (${GEMINI_MODELS[0]} → fallback chain)` : 'keyword-fallback',
+    ai:           GROQ_KEY ? `groq (${GROQ_MODELS[0]} → fallback chain)` : 'keyword-fallback',
     commands:     Object.keys(ALIASES).length,
     token_type:   getTokenType(),
     token_status: expiresMs > 0 ? `valid (expires in ${expiresMin}m)` : 'expired — will refresh on next call',
@@ -501,52 +499,31 @@ app.get('/commands', (_req, res) => {
   res.json({ tools: Object.keys(toolMap).sort(), aliases: Object.keys(ALIASES).sort() })
 })
 
-// ── /api/test-gemini — lists available models + tests the first working one ───
-app.get('/api/test-gemini', async (_req, res) => {
-  if (!GEMINI_KEY) { res.json({ error: 'GEMINI_API_KEY not set in .env' }); return }
-  try {
-    // Step 1: list models that support generateContent
-    const listResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_KEY}&pageSize=50`
-    )
-    const listRaw  = await listResp.text()
-    let availableModels: string[] = []
+// ── /api/test-ai — tests Groq connectivity and each model ────────────────────
+app.get('/api/test-ai', async (_req, res) => {
+  if (!GROQ_KEY) { res.json({ error: 'GROQ_API_KEY not set in .env' }); return }
+  const results: Record<string, any> = {}
+  for (const model of GROQ_MODELS) {
     try {
-      const listData = JSON.parse(listRaw)
-      availableModels = (listData.models ?? [])
-        .filter((m: any) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
-        .map((m: any) => (m.name as string).replace('models/', ''))
-    } catch { /* ignore */ }
-
-    // Step 2: try each model from our preferred list + whatever came back
-    const toTry = [...new Set([...GEMINI_MODELS, ...availableModels])]
-    const results: Record<string, any> = {}
-    for (const model of toTry.slice(0, 6)) {
-      try {
-        const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ role: 'user', parts: [{ text: 'Say hi in one word' }] }],
-              generationConfig: { maxOutputTokens: 16, temperature: 0 },
-            }),
-          }
-        )
-        const body = await r.text()
-        const parsed = JSON.parse(body)
-        const text = parsed?.candidates?.[0]?.content?.parts?.[0]?.text ?? null
-        results[model] = { status: r.status, text }
-      } catch (e: any) {
-        results[model] = { error: e.message }
-      }
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}` },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'Say hi in one word' }],
+          max_tokens: 16,
+          temperature: 0,
+        }),
+      })
+      const body   = await r.text()
+      const parsed = JSON.parse(body)
+      const text   = parsed?.choices?.[0]?.message?.content ?? null
+      results[model] = { status: r.status, text }
+    } catch (e: any) {
+      results[model] = { error: e.message }
     }
-
-    res.json({ available_models: availableModels, test_results: results })
-  } catch (err: any) {
-    res.json({ error: err.message })
   }
+  res.json({ models_tested: GROQ_MODELS, test_results: results })
 })
 
 // ── /api/status — raw vehicle data as JSON ────────────────────────────────────
@@ -594,7 +571,7 @@ app.post('/api/command', requireAuth, async (req, res) => {
 
 // ── Conversational chat session store ────────────────────────────────────────
 
-interface ChatMessage { role: 'user' | 'model'; parts: [{ text: string }] }
+interface ChatMessage { role: 'user' | 'assistant'; content: string }
 interface ChatSession { history: ChatMessage[]; lastActivity: number }
 
 const chatSessions = new Map<string, ChatSession>()
@@ -663,50 +640,53 @@ If the contact is not in the known list, still include their name — the phone 
 "Set charge to 80 and lock the car":
 {"type":"multi_action","actions":[{"tool":"set_charge_limit","params":{"percent":80}},{"tool":"lock_doors","params":{}}],"reply":"Charge limit set to 80% and doors locked."}`
 
-interface GeminiAction { tool: string; params: Record<string, any> }
-interface GeminiResult {
+interface AIAction { tool: string; params: Record<string, any> }
+interface AIChatResult {
   type:     string
   reply:    string
   tool?:    string
   params?:  Record<string, any>
-  actions?: GeminiAction[]
+  actions?: AIAction[]
   sms?:     { contact: string; body: string }
 }
 
-async function chatWithGemini(history: ChatMessage[]): Promise<GeminiResult> {
-  for (const model of GEMINI_MODELS) {
+async function chatWithAI(history: ChatMessage[]): Promise<AIChatResult> {
+  const messages = [
+    { role: 'system', content: CHAT_SYSTEM_PROMPT },
+    ...history,
+  ]
+  for (const model of GROQ_MODELS) {
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
-        {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: CHAT_SYSTEM_PROMPT }] },
-            contents: history,
-            generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
-          }),
-        }
-      )
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': `Bearer ${GROQ_KEY}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens:  1024,
+          temperature: 0.2,
+        }),
+      })
       const raw = await res.text()
       if (!res.ok) {
         if (res.status === 429) { console.warn(`[chat/${model}] rate-limited, trying next...`); continue }
         console.error(`[chat/${model}] HTTP ${res.status}`)
         continue
       }
-      const data    = JSON.parse(raw)
-      const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+      const data     = JSON.parse(raw)
+      const text: string = data?.choices?.[0]?.message?.content ?? ''
       console.log(`[chat/${model}] raw text: ${text.slice(0, 300)}`)
-      // Extract JSON — strip markdown fences if present, then find first {...} block
       let jsonStr = (text.match(/```(?:json)?\s*([\s\S]*?)```/) ?? [])[1]?.trim()
                  ?? text.trim()
-      // If still not valid, try to grab from first { to last }
       if (!jsonStr.startsWith('{')) {
         const start = jsonStr.indexOf('{')
         const end   = jsonStr.lastIndexOf('}')
         if (start !== -1 && end !== -1) jsonStr = jsonStr.slice(start, end + 1)
       }
-      const parsed  = JSON.parse(jsonStr)
+      const parsed = JSON.parse(jsonStr)
       console.log(`[chat/${model}] type=${parsed.type} tool=${parsed.tool ?? '-'}`)
       return parsed
     } catch (err) {
@@ -735,8 +715,8 @@ app.post('/chat', requireAuth, async (req, res) => {
     return
   }
 
-  if (!GEMINI_KEY) {
-    // No Gemini — fall back to single-shot dispatch
+  if (!GROQ_KEY) {
+    // No AI — fall back to single-shot keyword dispatch
     const reply = await dispatch(message)
     res.json({ reply, session: sessionId })
     return
@@ -748,10 +728,10 @@ app.post('/chat', requireAuth, async (req, res) => {
   session.lastActivity = Date.now()
 
   // Append user turn
-  session.history.push({ role: 'user', parts: [{ text: message }] })
+  session.history.push({ role: 'user', content: message })
   chatSessions.set(sessionId, session)
 
-  const result = await chatWithGemini(session.history)
+  const result = await chatWithAI(session.history)
 
   // Helper: run a single Tesla tool safely
   async function runTool(toolName: string, params: Record<string, any>): Promise<string> {
@@ -766,7 +746,7 @@ app.post('/chat', requireAuth, async (req, res) => {
     try {
       const toolResult = await runTool(result.tool, result.params ?? {})
       const spoken     = result.reply ? `${result.reply} ${toolResult}`.trim() : toolResult
-      session.history.push({ role: 'model', parts: [{ text: result.reply ?? toolResult }] })
+      session.history.push({ role: 'assistant', content: result.reply ?? toolResult })
       session.history = []
       res.json({ reply: spoken, action: result.tool, session: sessionId })
     } catch (err: any) {
@@ -800,7 +780,7 @@ app.post('/chat', requireAuth, async (req, res) => {
       console.log(`[chat/sms] to=${smsTo} body="${smsBody}"`)
     }
 
-    session.history.push({ role: 'model', parts: [{ text: result.reply ?? 'Done.' }] })
+    session.history.push({ role: 'assistant', content: result.reply ?? 'Done.' })
     session.history = []
     res.json({
       reply:    result.reply ?? 'Done.',
@@ -814,7 +794,7 @@ app.post('/chat', requireAuth, async (req, res) => {
 
   // ── Conversation reply — keep history for follow-up ────────────────────────
   const spoken = result.reply ?? "I didn't catch that, could you say that again?"
-  session.history.push({ role: 'model', parts: [{ text: spoken }] })
+  session.history.push({ role: 'assistant', content: spoken })
   res.json({ reply: spoken, session: sessionId })
 })
 
@@ -1019,7 +999,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
   <!-- AI Chat -->
   <div class="chat-card">
-    <div class="chat-header"><div class="ai-dot"></div> AI Assistant (Gemini)</div>
+    <div class="chat-header"><div class="ai-dot"></div> AI Assistant</div>
     <div class="chat-messages" id="chat-msgs">
       <div class="msg bot">Hi! Tell me what to do — "set temp to 22", "lock the car", "what's my battery?" 🚗</div>
     </div>
@@ -1223,8 +1203,8 @@ app.get('/', requireAuth, (_req, res) => {
 })
 
 app.listen(PORT, async () => {
-  console.log('[tesla-siri] Server running on http://localhost:' + PORT)
-  console.log('[tesla-siri] AI mode: ' + (GEMINI_KEY ? 'Gemini (natural language)' : 'Keyword aliases'))
+  console.log('[tesla-siri] Server running on port ' + PORT)
+  console.log('[tesla-siri] AI mode: ' + (GROQ_KEY ? 'Groq/Llama (natural language)' : 'Keyword aliases'))
   console.log('[tesla-siri] Dashboard: http://localhost:' + PORT + '/')
   console.log('[tesla-siri] Endpoint:  http://localhost:' + PORT + '/siri?cmd=<your+command>')
   console.log('[tesla-siri] Health:    http://localhost:' + PORT + '/health')

@@ -12,9 +12,23 @@ import https from 'https'
 import { URLSearchParams } from 'url'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
 
-const CLIENT_ID     = 'e043473e-a97b-4cdd-bdf3-3d9f898ae1a1'
-const CLIENT_SECRET = 'ta-secret.PQZ5BZxbCVopC-B7'
-const REDIRECT_URI  = 'http://localhost:5431/mcp'   // must match what is registered in Tesla developer portal
+// Load .env if present
+if (existsSync('.env')) {
+  const lines = readFileSync('.env', 'utf8').split('\n')
+  for (const line of lines) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim()
+  }
+}
+
+const CLIENT_ID     = process.env.TESLA_CLIENT_ID
+const CLIENT_SECRET = process.env.TESLA_CLIENT_SECRET
+const REDIRECT_URI  = process.env.TESLA_REDIRECT_URI ?? 'http://localhost:5431/mcp'
+
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  console.error('❌  TESLA_CLIENT_ID and TESLA_CLIENT_SECRET must be set in .env or environment')
+  process.exit(1)
+}
 
 const code = process.argv[2]
 if (!code) {

@@ -2,30 +2,45 @@
  * Tesla Fleet API — Partner Token + Registration
  *
  * Usage:
- *   node get-tesla-token.mjs                    # just get partner token
- *   node get-tesla-token.mjs abc.ngrok-free.dev  # also register with that domain
+ *   node get-tesla-token.mjs                        # just get partner token
+ *   node get-tesla-token.mjs your-app.railway.app   # also register with that domain
  *
- * The ngrok domain is required to complete partner registration.
- * Run start-tesla.ps1 first to get your current ngrok URL, then pass
- * just the hostname (no https://) as the argument.
+ * The public domain is required to complete partner registration.
+ * Pass just the hostname (no https://) as the argument.
+ *
+ * Reads TESLA_CLIENT_ID and TESLA_CLIENT_SECRET from .env or environment.
  */
 
 import https from 'https'
 import { URLSearchParams } from 'url'
 import { writeFileSync, readFileSync, existsSync } from 'fs'
 
-// ── Credentials ──────────────────────────────────────────────────────────────
-const CLIENT_ID     = 'e043473e-a97b-4cdd-bdf3-3d9f898ae1a1'
-const CLIENT_SECRET = 'ta-secret.PQZ5BZxbCVopC-B7'
+// Load .env if present
+if (existsSync('.env')) {
+  const lines = readFileSync('.env', 'utf8').split('\n')
+  for (const line of lines) {
+    const m = line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/)
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim()
+  }
+}
+
+// ── Credentials (from environment) ───────────────────────────────────────────
+const CLIENT_ID     = process.env.TESLA_CLIENT_ID
+const CLIENT_SECRET = process.env.TESLA_CLIENT_SECRET
 const AUDIENCE      = 'https://fleet-api.prd.eu.vn.cloud.tesla.com'
 const SCOPES        = 'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds'
 
-// ── Ngrok domain from args or .env ───────────────────────────────────────────
-let NGROK_DOMAIN = process.argv[2] ?? null
+if (!CLIENT_ID || !CLIENT_SECRET) {
+  console.error('❌  TESLA_CLIENT_ID and TESLA_CLIENT_SECRET must be set in .env or environment')
+  process.exit(1)
+}
+
+// ── Public domain from args ───────────────────────────────────────────────────
+let PUBLIC_DOMAIN = process.argv[2] ?? null
 
 // Strip protocol if accidentally included
-if (NGROK_DOMAIN) {
-  NGROK_DOMAIN = NGROK_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '')
+if (PUBLIC_DOMAIN) {
+  PUBLIC_DOMAIN = PUBLIC_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '')
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -126,24 +141,24 @@ console.log(`    Expires in : ${expires_in}s (~${Math.round(expires_in/3600)}h)\
 updateEnv({ TESLA_ACCESS_TOKEN: access_token })
 console.log('📄  Saved TESLA_ACCESS_TOKEN to .env\n')
 
-// ── Step 2: Register with ngrok domain ────────────────────────────────────────
-if (!NGROK_DOMAIN) {
-  console.log('⚠️   No ngrok domain provided — skipping registration.')
+// ── Step 2: Register with public domain ───────────────────────────────────────
+if (!PUBLIC_DOMAIN) {
+  console.log('⚠️   No public domain provided — skipping registration.')
   console.log('    Registration is required before vehicle commands will work.')
   console.log('    Steps:')
-  console.log('      1. Run .\\start-tesla.ps1 to get your ngrok URL')
-  console.log('      2. Run: node get-tesla-token.mjs <your-ngrok-domain>')
-  console.log('         e.g.: node get-tesla-token.mjs abc.ngrok-free.dev\n')
+  console.log('      1. Deploy to Railway and get your public URL')
+  console.log('      2. Run: node get-tesla-token.mjs <your-app>.railway.app')
+  console.log('         e.g.: node get-tesla-token.mjs my-tesla.railway.app\n')
 } else {
-  console.log(`📋  Registering partner account with domain: ${NGROK_DOMAIN}\n`)
-  console.log(`    Tesla will verify: https://${NGROK_DOMAIN}/.well-known/appspecific/com.tesla.3p.public-key.pem`)
-  console.log('    (Make sure start-tesla.ps1 is running and the Siri server is up)\n')
+  console.log(`📋  Registering partner account with domain: ${PUBLIC_DOMAIN}\n`)
+  console.log(`    Tesla will verify: https://${PUBLIC_DOMAIN}/.well-known/appspecific/com.tesla.3p.public-key.pem`)
+  console.log('    (Make sure the server is deployed and accessible)\n')
 
   const regResp = await postJson(
     'fleet-api.prd.eu.vn.cloud.tesla.com',
     '/api/1/partner_accounts',
     access_token,
-    { domain: NGROK_DOMAIN }
+    { domain: PUBLIC_DOMAIN }
   )
 
   console.log(`    /partner_accounts status: ${regResp.status}`)
@@ -151,22 +166,22 @@ if (!NGROK_DOMAIN) {
 
   if (regResp.status === 200 || regResp.status === 204) {
     console.log('✅  Partner account registered successfully!\n')
-    updateEnv({ TESLA_NGROK_DOMAIN: NGROK_DOMAIN })
+    updateEnv({ PUBLIC_URL: `https://${PUBLIC_DOMAIN}` })
   } else if (regResp.status === 422 && JSON.stringify(regResp.body).includes('already')) {
     console.log('✅  Already registered — no action needed.\n')
   } else {
     console.log('❌  Registration failed. Check that:')
-    console.log(`    • start-tesla.ps1 is running (Siri server is up on port 3000)`)
-    console.log(`    • ngrok is running and ${NGROK_DOMAIN} is the active tunnel`)
+    console.log(`    • The server is deployed and running`)
+    console.log(`    • https://${PUBLIC_DOMAIN} is accessible from the internet`)
     console.log(`    • tesla-public.pem exists (run: node generate-keys.mjs)`)
-    console.log(`    • ${NGROK_DOMAIN} is added to Allowed Origins in Tesla developer portal\n`)
+    console.log(`    • ${PUBLIC_DOMAIN} is added to Allowed Origins in Tesla developer portal\n`)
   }
 
   // Verify public key is live
   console.log('🔍  Verifying public key is accessible...\n')
   const pkResp = await get(
     'fleet-api.prd.eu.vn.cloud.tesla.com',
-    `/api/1/partner_accounts/public_key?domain=${NGROK_DOMAIN}`,
+    `/api/1/partner_accounts/public_key?domain=${PUBLIC_DOMAIN}`,
     access_token
   )
   console.log(`    /public_key status: ${pkResp.status}`)
@@ -178,10 +193,11 @@ if (!NGROK_DOMAIN) {
 }
 
 // ── Step 3: Print auth URL for user token ─────────────────────────────────────
+const REDIRECT_URI = process.env.TESLA_REDIRECT_URI ?? 'http://localhost:5431/mcp'
 const authUrl = new URL('https://auth.tesla.com/oauth2/v3/authorize')
 authUrl.searchParams.set('response_type', 'code')
 authUrl.searchParams.set('client_id',     CLIENT_ID)
-authUrl.searchParams.set('redirect_uri',  'http://localhost:5431/mcp')
+authUrl.searchParams.set('redirect_uri',  REDIRECT_URI)
 authUrl.searchParams.set('scope',         SCOPES)
 authUrl.searchParams.set('state',         'tesla-mcp-setup')
 

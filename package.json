@@ -17,7 +17,6 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "axios": "^1.7.0",
     "dotenv": "^16.4.0",
     "express": "^4.19.0",
     "zod": "^3.23.0"
