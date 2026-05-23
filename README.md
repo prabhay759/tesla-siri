@@ -116,87 +116,126 @@ This writes `TESLA_REFRESH_TOKEN` to your `.env`. You will need this for Railway
 
 ---
 
-## Phone-only setup (no laptop needed)
+## Phone-only setup (no laptop, no Docker, no commands)
 
-You can do the entire setup from an iPhone using **GitHub Codespaces** (free, runs in Safari) for the key generation step, and a built-in OAuth flow on your Railway server for the token step.
+Every setup step runs in your phone browser via endpoints built into the Railway server. You need nothing installed locally.
 
-### Phone Step 1 — Fork the repo on GitHub
+### Phone Step 1 — Create a Tesla Developer app
 
-On your iPhone, go to the GitHub repo page and tap **Fork**. This gives you your own copy to link to Railway.
+On your phone, go to [developer.tesla.com](https://developer.tesla.com):
 
-### Phone Step 2 — Create a GitHub Codespace (for key generation only)
+1. Sign in → **Create Application**
+2. Fill in a name (e.g. "Tesla Siri"), select the scopes: `vehicle_device_data`, `vehicle_cmds`, `vehicle_charging_cmds`
+3. Add an allowed redirect URI: `https://YOUR-APP.railway.app/oauth/callback`
+4. Save — copy your **Client ID** and **Client Secret**
 
-1. On your fork page, tap **Code** → **Codespaces** → **Create codespace on main**
-2. Wait ~60 seconds for it to load (it's a full VS Code in your browser)
-3. In the terminal at the bottom, run:
+### Phone Step 2 — Deploy to Railway
 
-```bash
-node generate-keys.mjs
-```
+1. Go to [railway.app](https://railway.app) → sign up with GitHub
+2. **New Project** → **Deploy from GitHub repo** → select this repo
+3. Railway detects `railway.toml` automatically and starts deploying
+4. Go to **Variables** and add these (Railway redeploys automatically when you save):
 
-4. Run this to display the public key:
-
-```bash
-cat tesla-public.pem
-```
-
-5. Select all the output (including the `-----BEGIN PUBLIC KEY-----` lines) and copy it
-6. Keep this tab open — you'll set it as `TESLA_PUBLIC_KEY` in Railway shortly
-
-> GitHub gives you 60 free Codespace hours per month. You only need it for about 5 minutes.
-
-### Phone Step 3 — Set up Railway
-
-1. Go to [railway.app](https://railway.app) on your phone and sign up with GitHub
-2. **New Project** → **Deploy from GitHub repo** → select your fork
-3. Railway detects `railway.toml` automatically
-4. Go to **Variables** and add:
-
-| Variable | Value |
+| Variable | Where to get it |
 |---|---|
-| `TESLA_CLIENT_ID` | from developer.tesla.com |
-| `TESLA_CLIENT_SECRET` | from developer.tesla.com |
-| `TESLA_VIN` | your VIN (Tesla app → About) |
-| `GROQ_API_KEY` | from console.groq.com |
-| `SIRI_SECRET` | any password string |
-| `TESLA_PUBLIC_KEY` | paste what you copied from the Codespace |
+| `TESLA_CLIENT_ID` | Tesla Developer Portal (step 1) |
+| `TESLA_CLIENT_SECRET` | Tesla Developer Portal (step 1) |
+| `TESLA_VIN` | Tesla app → Manage → About |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) (free, no card) |
+| `SIRI_SECRET` | make up any password string |
 | `TESLA_REDIRECT_URI` | `https://YOUR-APP.railway.app/oauth/callback` |
 | `HOME_ADDRESS` | `123 Your Street, City, Country` |
 | `WORK_ADDRESS` | optional |
 
-5. Also go to **developer.tesla.com** → your app → **Allowed Redirect URIs** → add `https://YOUR-APP.railway.app/oauth/callback`
+Wait ~2 minutes for Railway to finish deploying. Your app URL is shown in the Railway dashboard.
 
-6. Railway auto-deploys once variables are saved. Wait ~2 minutes.
+### Phone Step 3 — Generate your Tesla keys (on the server)
 
-### Phone Step 4 — Get your Tesla refresh token (from the phone)
+Open in Safari — **no commands needed**:
 
-1. Once deployed, open in Safari: `https://YOUR-APP.railway.app/oauth/start`
-2. This redirects you to Tesla's login page
-3. Log in with your Tesla account and approve permissions
-4. Tesla redirects back to your Railway app at `/oauth/callback`
-5. **A page appears showing your `TESLA_REFRESH_TOKEN`** — copy it
+```
+https://YOUR-APP.railway.app/setup/keys?secret=YOUR_SIRI_SECRET
+```
 
-6. Go back to Railway → Variables → add:
+A page appears with your generated public and private keys. Copy each one and add to Railway Variables:
 
 | Variable | Value |
 |---|---|
-| `TESLA_REFRESH_TOKEN` | paste the token from step 5 |
+| `TESLA_PUBLIC_KEY` | copy from `/setup/keys` page |
+| `TESLA_PRIVATE_KEY` | copy from `/setup/keys` page (optional, for signed VCP) |
 
-7. In Railway, trigger a redeploy (push a commit, or click **Redeploy**)
+Railway redeploys automatically after you save.
 
-### Phone Step 5 — Register with Tesla
+### Phone Step 4 — Register your domain with Tesla (on the server)
 
-In [developer.tesla.com](https://developer.tesla.com) → your app → **Allowed Origins** → add `https://YOUR-APP.railway.app`.
+Once redeployed, open:
 
-Then run the partner registration. Since you have no laptop, use the Codespace terminal again:
-
-```bash
-node get-tesla-token.mjs YOUR-APP.railway.app
 ```
+https://YOUR-APP.railway.app/setup/register?secret=YOUR_SIRI_SECRET
+```
+
+This page automatically gets a partner token and registers your Railway domain with Tesla Fleet API. It also confirms your public key is reachable. If it shows a failure, wait a minute and refresh — the key endpoint needs the redeploy from step 3 to be live.
+
+Also go to **developer.tesla.com** → your app → **Allowed Origins** → add `https://YOUR-APP.railway.app`.
+
+### Phone Step 5 — Get your Tesla refresh token (on the server)
+
+Open:
+
+```
+https://YOUR-APP.railway.app/oauth/start
+```
+
+This redirects you to Tesla's login page. Log in, approve permissions. Tesla sends you back to `/oauth/callback` on your server, which shows your `TESLA_REFRESH_TOKEN` with a copy button.
+
+Copy it and add to Railway Variables:
+
+| Variable | Value |
+|---|---|
+| `TESLA_REFRESH_TOKEN` | paste from the callback page |
+
+Railway redeploys one final time.
 
 ### Phone Step 6 — VCP pairing
 
 Tesla app → **Security & Privacy → Manage Third-Party Apps** → find your app → **Grant Access**.
+
+### Phone Step 7 — Verify
+
+Open `https://YOUR-APP.railway.app/health` — if `token_type` is `"user"`, you're fully live.
+
+---
+
+## Self-hosting with Docker
+
+If you prefer Docker over Railway (or want to run it on a VPS, NAS, or home server):
+
+```bash
+docker build -t tesla-siri .
+
+docker run -d \
+  --name tesla-siri \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -e TESLA_CLIENT_ID=your-id \
+  -e TESLA_CLIENT_SECRET=your-secret \
+  -e TESLA_VIN=your-vin \
+  -e TESLA_REFRESH_TOKEN=your-token \
+  -e GROQ_API_KEY=your-key \
+  -e SIRI_SECRET=your-password \
+  -e TESLA_PUBLIC_KEY="$(cat tesla-public.pem)" \
+  -e HOME_ADDRESS="123 Your Street, City, Country" \
+  tesla-siri
+```
+
+Or use a `.env` file:
+
+```bash
+docker run -d --name tesla-siri --restart unless-stopped \
+  -p 3000:3000 --env-file .env tesla-siri
+```
+
+The same `/setup/keys`, `/setup/register`, and `/oauth/start` endpoints work identically when self-hosting — just replace `railway.app` with your server's URL.
 
 ---
 
@@ -523,7 +562,9 @@ Push to GitHub → Railway redeploys automatically.
 | `/health` | GET | none | Server + token status |
 | `/commands` | GET | none | List all tools and aliases |
 | `/api/test-ai` | GET | none | Test Groq model connectivity |
-| `/oauth/start` | GET | none | Begin Tesla OAuth (phone-friendly setup) |
+| `/setup/keys` | GET | secret | Generate EC key pair on server, display for copy |
+| `/setup/register` | GET | secret | Register Railway domain with Tesla Fleet API |
+| `/oauth/start` | GET | none | Begin Tesla OAuth (redirects to Tesla login) |
 | `/oauth/callback` | GET | none | Receives Tesla redirect, shows refresh token |
 | `/` | GET | secret | Live dashboard |
 | `/chat` | POST | secret | AI + macro dispatch (Siri shortcut target) |

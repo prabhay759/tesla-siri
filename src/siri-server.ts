@@ -12,6 +12,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { readFileSync, existsSync } from 'fs'
+import { generateKeyPairSync } from 'crypto'
 import { TeslaClient } from './utils/tesla-client.js'
 import { tools } from './tools/index.js'
 import { forceRefresh, getTokenType, tokenExpiresInMs } from './utils/token-manager.js'
@@ -1316,6 +1317,138 @@ app.get('/homekit/battery', requireAuth, async (_req, res) => {
 
 app.get('/', requireAuth, (_req, res) => {
   res.type('text/html').send(DASHBOARD_HTML)
+})
+
+// ── /setup — Server-side setup (no laptop, no Docker, no commands needed) ─────
+// Open these in your phone browser after deploying to Railway.
+// Both routes require SIRI_SECRET auth.
+
+const SETUP_STYLE = `<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:20px;background:#0a0a0c;color:#f0f0f5}
+  h1{font-size:20px;margin-bottom:4px}h2{font-size:15px;margin-bottom:8px}
+  .ok{color:#30d158}.warn{color:#ffd60a}.err{color:#E8001A}
+  .card{background:#16161c;border:1px solid #2a2a35;border-radius:12px;padding:16px;margin:14px 0}
+  textarea{background:#0a0a0c;color:#f0f0f5;border:1px solid #2a2a35;border-radius:8px;padding:10px;
+    width:100%;font-size:12px;resize:none;margin-top:8px}
+  button{background:#E8001A;color:#fff;border:none;padding:10px 16px;border-radius:8px;
+    font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;width:100%}
+  p{font-size:13px;color:#888899;line-height:1.5;margin-top:6px}
+  code{background:#1a1a20;padding:2px 6px;border-radius:4px;font-size:12px}
+  pre{background:#1a1a20;border-radius:8px;padding:10px;font-size:12px;overflow:auto;margin-top:8px}
+</style>`
+
+// /setup/keys — generate EC key pair entirely on the server
+app.get('/setup/keys', requireAuth, (_req, res) => {
+  if (process.env.TESLA_PUBLIC_KEY) {
+    res.type('text/html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${SETUP_STYLE}</head><body>
+      <h1 class="warn">⚠️ Keys already configured</h1>
+      <div class="card"><p><code>TESLA_PUBLIC_KEY</code> is already set in Railway.<br><br>
+      Remove it from Railway Variables first if you need to regenerate.</p></div>
+    </body></html>`)
+    return
+  }
+  const { publicKey, privateKey } = generateKeyPairSync('ec', {
+    namedCurve:         'prime256v1',
+    publicKeyEncoding:  { type: 'spki',  format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  })
+  res.type('text/html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${SETUP_STYLE}</head><body>
+    <h1>🔑 Keys Generated</h1>
+    <p>Set these two variables in Railway → Variables, then redeploy.</p>
+    <div class="card">
+      <h2>1 — TESLA_PUBLIC_KEY</h2>
+      <p>Copy the entire block including the BEGIN/END lines:</p>
+      <textarea id="pub" rows="8" readonly>${publicKey}</textarea>
+      <button onclick="navigator.clipboard.writeText(document.getElementById('pub').value).then(()=>this.textContent='✓ Copied!')">Copy Public Key</button>
+    </div>
+    <div class="card">
+      <h2>2 — TESLA_PRIVATE_KEY <span style="color:#888899;font-weight:400">(keep secret)</span></h2>
+      <p>Optional — only needed for signed VCP commands:</p>
+      <textarea id="priv" rows="8" readonly>${privateKey}</textarea>
+      <button onclick="navigator.clipboard.writeText(document.getElementById('priv').value).then(()=>this.textContent='✓ Copied!')">Copy Private Key</button>
+    </div>
+    <div class="card">
+      <h2>Next step</h2>
+      <p>After setting both variables and redeploying, go to <strong>/setup/register</strong> to register your domain with Tesla.</p>
+    </div>
+  </body></html>`)
+})
+
+// /setup/register — register this server's domain with Tesla Fleet API
+app.get('/setup/register', requireAuth, async (req, res) => {
+  const domain = (req.headers.host ?? '').replace(/:\d+$/, '')
+
+  if (!process.env.TESLA_CLIENT_ID || !process.env.TESLA_CLIENT_SECRET) {
+    res.status(400).type('text/html').send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${SETUP_STYLE}</head><body>
+      <h1 class="err">Missing credentials</h1>
+      <div class="card"><p>Set <code>TESLA_CLIENT_ID</code> and <code>TESLA_CLIENT_SECRET</code> in Railway Variables first, then redeploy.</p></div>
+    </body></html>`)
+    return
+  }
+
+  const html = (title: string, cards: string) =>
+    `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">${SETUP_STYLE}</head><body>
+      <h1>${title}</h1>${cards}</body></html>`
+
+  try {
+    // Step 1: partner token via client_credentials
+    const tokenRes = await fetch('https://auth.tesla.com/oauth2/v3/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    new URLSearchParams({
+        grant_type:    'client_credentials',
+        client_id:     process.env.TESLA_CLIENT_ID!,
+        client_secret: process.env.TESLA_CLIENT_SECRET!,
+        scope:         'openid offline_access vehicle_device_data vehicle_cmds vehicle_charging_cmds',
+        audience:      'https://fleet-api.prd.eu.vn.cloud.tesla.com',
+      }).toString(),
+    })
+    const tokenData = await tokenRes.json() as any
+    if (!tokenRes.ok) {
+      res.type('text/html').send(html('❌ Token failed',
+        `<div class="card"><h2 class="err">Partner token request failed</h2><pre>${JSON.stringify(tokenData, null, 2)}</pre>
+        <p>Check <code>TESLA_CLIENT_ID</code> and <code>TESLA_CLIENT_SECRET</code> are correct.</p></div>`))
+      return
+    }
+    const partnerToken = tokenData.access_token
+
+    // Step 2: register domain
+    const regRes = await fetch('https://fleet-api.prd.eu.vn.cloud.tesla.com/api/1/partner_accounts', {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${partnerToken}`, 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ domain }),
+    })
+    const regData    = await regRes.json() as any
+    const alreadyReg = regRes.status === 422 && JSON.stringify(regData).includes('already')
+    const regOk      = regRes.status === 200 || regRes.status === 204 || alreadyReg
+
+    // Step 3: verify public key is reachable
+    const pkRes = await fetch(
+      `https://fleet-api.prd.eu.vn.cloud.tesla.com/api/1/partner_accounts/public_key?domain=${domain}`,
+      { headers: { 'Authorization': `Bearer ${partnerToken}` } }
+    )
+
+    res.type('text/html').send(html('Tesla Registration', `
+      <div class="card">
+        <h2 class="${regOk ? 'ok' : 'err'}">${alreadyReg ? '✓ Already registered' : regOk ? '✅ Domain registered!' : '❌ Registration failed'}</h2>
+        <p>Domain: <code>${domain}</code></p>
+        ${!regOk ? `<pre>${JSON.stringify(regData, null, 2)}</pre>` : ''}
+      </div>
+      <div class="card">
+        <h2 class="${pkRes.ok ? 'ok' : 'err'}">Public key: ${pkRes.ok ? '✅ Tesla can see it' : '❌ Not found yet'}</h2>
+        ${!pkRes.ok ? `<p>Make sure <code>TESLA_PUBLIC_KEY</code> is set in Railway Variables and the server has redeployed, then refresh this page.</p>` : ''}
+      </div>
+      <div class="card">
+        <h2>Remaining steps</h2>
+        <p>1. In <strong>developer.tesla.com</strong> → your app → <strong>Allowed Origins</strong> → add <code>https://${domain}</code></p>
+        <p style="margin-top:8px">2. Tesla mobile app → <strong>Security &amp; Privacy → Third-Party Apps → Grant Access</strong></p>
+        <p style="margin-top:8px">3. Go to <strong>/oauth/start</strong> to get your refresh token.</p>
+      </div>
+    `))
+  } catch (err: any) {
+    res.status(500).type('text/html').send(`<pre>Error: ${err.message}</pre>`)
+  }
 })
 
 // ── /oauth — Phone-friendly Tesla token setup (no laptop needed) ──────────────
