@@ -439,13 +439,21 @@ app.use(express.urlencoded({ extended: true }))
 
 // Tesla partner public key — NO AUTH
 app.get('/.well-known/appspecific/com.tesla.3p.public-key.pem', (req, res) => {
-  const keyPath = process.env.TESLA_PUBLIC_KEY_FILE ?? 'tesla-public.pem'
-  if (!existsSync(keyPath)) {
-    console.warn(`[well-known] Public key not found at "${keyPath}" — run: node generate-keys.mjs`)
-    res.status(404).send('Public key not found. Run: node generate-keys.mjs')
+  // Prefer env var (Railway / cloud deployments — filesystem is ephemeral)
+  const keyEnv = process.env.TESLA_PUBLIC_KEY
+  if (keyEnv) {
+    console.log('[well-known] Serving public key from TESLA_PUBLIC_KEY env var to:', req.ip)
+    res.type('application/x-pem-file').send(keyEnv.replace(/\\n/g, '\n'))
     return
   }
-  console.log('[well-known] Serving public key to:', req.ip)
+  // Fall back to file for local dev
+  const keyPath = process.env.TESLA_PUBLIC_KEY_FILE ?? 'tesla-public.pem'
+  if (!existsSync(keyPath)) {
+    console.warn('[well-known] Public key not configured — set TESLA_PUBLIC_KEY env var or run: node generate-keys.mjs')
+    res.status(404).send('Public key not configured. Set TESLA_PUBLIC_KEY env var in Railway.')
+    return
+  }
+  console.log('[well-known] Serving public key from file to:', req.ip)
   res.type('application/x-pem-file').send(readFileSync(keyPath, 'utf8'))
 })
 
