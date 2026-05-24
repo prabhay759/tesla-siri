@@ -220,8 +220,8 @@ const GROQ_MODELS = [
 ]
 const OPENROUTER_MODELS = [
   'meta-llama/llama-3.3-70b-instruct:free',
-  'meta-llama/llama-3.1-8b-instruct:free',
-  'mistralai/mixtral-8x7b-instruct:free',
+  'google/gemma-3-27b-it:free',
+  'mistralai/mistral-7b-instruct:free',
 ]
 const AI_MODELS = OPENROUTER_KEY ? OPENROUTER_MODELS : GROQ_MODELS
 
