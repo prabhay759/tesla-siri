@@ -11,7 +11,7 @@ import https from 'https'
 import { getAccessToken, invalidateToken } from './token-manager.js'
 
 const FLEET_HOST = 'fleet-api.prd.eu.vn.cloud.tesla.com'
-const MAX_WAKE_RETRIES = 10
+const MAX_WAKE_RETRIES = 5
 const WAKE_POLL_MS = 3000
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ export async function wakeVehicle(vin: string): Promise<void> {
     }
     console.error(`[tesla] Vehicle state: ${state} (retry ${i + 1}/${MAX_WAKE_RETRIES})`)
   }
-  throw new Error('Vehicle did not wake up in time')
+  throw new Error('Car is asleep and could not be woken up. It may be out of cell range. Please try again in a minute.')
 }
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)) }

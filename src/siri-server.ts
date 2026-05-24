@@ -486,7 +486,9 @@ async function dispatch(cmd: string): Promise<string> {
         const result = await tool.handler(params, tesla)
         return ai.reply ? `${ai.reply}\n${result}`.trim() : result
       } catch (err: any) {
-        return `Error running ${ai.tool}: ${err.message}`
+        const msg: string = err.message ?? 'Unknown error'
+        if (msg.includes('asleep') || msg.includes('wake') || msg.includes('offline')) return msg
+        return `Sorry, the command failed: ${msg}`
       }
     }
   }
@@ -501,7 +503,9 @@ async function dispatch(cmd: string): Promise<string> {
       try {
         return await tool.handler(kw.input, tesla)
       } catch (err: any) {
-        return `Error: ${err.message}`
+        const msg: string = err.message ?? 'Unknown error'
+        if (msg.includes('asleep') || msg.includes('wake') || msg.includes('offline')) return msg
+        return `Sorry, the command failed: ${msg}`
       }
     }
   }
