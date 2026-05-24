@@ -1,21 +1,41 @@
 {
-  "_comment": "Add the 'mcpServers' block below into your Claude Desktop config.",
-  "_configPath_macOS":  "~/Library/Application Support/Claude/claude_desktop_config.json",
+  "_readme": "Three ways to connect Claude Desktop to your Tesla MCP server. Pick ONE and copy just that mcpServers block into your Claude Desktop config file.",
+  "_configPath_macOS":   "~/Library/Application Support/Claude/claude_desktop_config.json",
   "_configPath_windows": "%APPDATA%\\Claude\\claude_desktop_config.json",
 
-  "mcpServers": {
+  "_option_A": "━━ Option A: stdio (local only, no server needed) ━━",
+  "optionA_mcpServers": {
     "tesla": {
       "command": "node",
-      "args": [
-        "C:\\Users\\satya\\OneDrive\\Documents\\Prabhay AI\\tesla-mcp\\dist\\index.js"
-      ],
+      "args": ["/ABSOLUTE/PATH/TO/tesla-siri/dist/index.js"],
       "env": {
-        "TESLA_CLIENT_ID":     "de53c727-0415-4a57-bb98-ded0eaff5a0b",
-        "TESLA_CLIENT_SECRET": "ta-secret.srCazKAoJ!+46AZK",
-        "TESLA_ACCESS_TOKEN":  "PASTE_YOUR_TOKEN_HERE",
-        "TESLA_REFRESH_TOKEN": "PASTE_YOUR_REFRESH_TOKEN_HERE",
-        "TESLA_VIN":           "PASTE_YOUR_VIN_HERE",
+        "TESLA_CLIENT_ID":     "YOUR_CLIENT_ID",
+        "TESLA_CLIENT_SECRET": "YOUR_CLIENT_SECRET",
+        "TESLA_REFRESH_TOKEN": "YOUR_REFRESH_TOKEN",
+        "TESLA_VIN":           "YOUR_VIN",
         "MCP_MODE":            "stdio"
+      }
+    }
+  },
+
+  "_option_B": "━━ Option B: Streamable HTTP (recommended — connects to Railway) ━━",
+  "optionB_mcpServers": {
+    "tesla": {
+      "type": "streamable-http",
+      "url": "https://YOUR-APP.railway.app/mcp",
+      "headers": {
+        "x-siri-secret": "YOUR_SIRI_SECRET"
+      }
+    }
+  },
+
+  "_option_C": "━━ Option C: SSE legacy (alternative remote — connects to Railway) ━━",
+  "optionC_mcpServers": {
+    "tesla": {
+      "type": "sse",
+      "url": "https://YOUR-APP.railway.app/sse",
+      "headers": {
+        "x-siri-secret": "YOUR_SIRI_SECRET"
       }
     }
   }

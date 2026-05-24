@@ -12,7 +12,11 @@
 import 'dotenv/config'
 import express from 'express'
 import { readFileSync, existsSync } from 'fs'
-import { generateKeyPairSync } from 'crypto'
+import { generateKeyPairSync, randomUUID } from 'crypto'
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js'
 import { TeslaClient } from './utils/tesla-client.js'
 import { tools } from './tools/index.js'
 import { forceRefresh, getTokenType, tokenExpiresInMs } from './utils/token-manager.js'
@@ -102,6 +106,33 @@ function invalidateStatusCache() { _statusCache = null }
 
 const toolMap: Record<string, typeof tools[number]> = {}
 for (const t of tools) toolMap[t.name] = t
+
+// ── MCP server factory ────────────────────────────────────────────────────────
+// Used by /mcp (Streamable HTTP), /sse (legacy SSE), and src/index.ts (stdio).
+
+function createMcpServer(): McpServer {
+  const server = new McpServer({
+    name:        'tesla',
+    version:     '1.0.0',
+    description: 'Control your Tesla via voice, HomeKit, and AI agents',
+  })
+  for (const tool of tools) {
+    server.tool(
+      tool.name,
+      tool.description,
+      tool.inputSchema.shape ?? {},
+      async (input: any) => {
+        try {
+          const text = await tool.handler(input, tesla)
+          return { content: [{ type: 'text' as const, text }] }
+        } catch (err: any) {
+          return { content: [{ type: 'text' as const, text: `Error: ${err.message}` }], isError: true }
+        }
+      }
+    )
+  }
+  return server
+}
 
 // ── AI dispatcher (Groq — free Llama models) ─────────────────────────────────
 
@@ -1317,6 +1348,88 @@ app.get('/homekit/battery', requireAuth, async (_req, res) => {
 
 app.get('/', requireAuth, (_req, res) => {
   res.type('text/html').send(DASHBOARD_HTML)
+})
+
+// ── MCP — Model Context Protocol server (Claude, agents, AI tools) ───────────
+//
+// Three transports, one server factory:
+//   POST/GET/DELETE /mcp  — Streamable HTTP (Claude.ai, Claude Code, any modern client)
+//   GET /sse + POST /messages — Legacy SSE (Claude Desktop older config)
+//
+// Auth: same SIRI_SECRET via x-siri-secret header or ?secret= query param.
+
+// Streamable HTTP — stateful session map
+const mcpSessions: Record<string, StreamableHTTPServerTransport> = {}
+
+app.post('/mcp', express.json(), requireAuth, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  let transport: StreamableHTTPServerTransport
+
+  if (sessionId && mcpSessions[sessionId]) {
+    transport = mcpSessions[sessionId]
+  } else if (!sessionId && isInitializeRequest(req.body)) {
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (id) => {
+        mcpSessions[id] = transport
+        console.log(`[mcp] session started: ${id}`)
+      },
+    })
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        delete mcpSessions[transport.sessionId]
+        console.log(`[mcp] session closed: ${transport.sessionId}`)
+      }
+    }
+    const server = createMcpServer()
+    await server.connect(transport)
+  } else {
+    res.status(400).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Send an initialize request first (no mcp-session-id header)' },
+      id: null,
+    })
+    return
+  }
+
+  await transport.handleRequest(req, res, req.body)
+})
+
+app.get('/mcp', requireAuth, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  const transport = sessionId ? mcpSessions[sessionId] : undefined
+  if (!transport) { res.status(400).send('Unknown MCP session — reconnect'); return }
+  await transport.handleRequest(req, res)
+})
+
+app.delete('/mcp', requireAuth, async (req, res) => {
+  const sessionId = req.headers['mcp-session-id'] as string | undefined
+  if (sessionId && mcpSessions[sessionId]) {
+    await mcpSessions[sessionId].close()
+    delete mcpSessions[sessionId]
+  }
+  res.status(200).send('OK')
+})
+
+// Legacy SSE — for Claude Desktop / older MCP clients
+const sseSessions: Record<string, SSEServerTransport> = {}
+
+app.get('/sse', requireAuth, async (req, res) => {
+  const server    = createMcpServer()
+  const transport = new SSEServerTransport('/messages', res)
+  sseSessions[transport.sessionId] = transport
+  await server.connect(transport)
+  console.log(`[sse] client connected: ${transport.sessionId}`)
+  req.on('close', () => {
+    delete sseSessions[transport.sessionId]
+    console.log(`[sse] client disconnected: ${transport.sessionId}`)
+  })
+})
+
+app.post('/messages', requireAuth, express.json(), async (req, res) => {
+  const transport = sseSessions[req.query.sessionId as string]
+  if (!transport) { res.status(404).json({ error: 'SSE session not found — reconnect' }); return }
+  await transport.handlePostMessage(req, res)
 })
 
 // ── /setup — Server-side setup (no laptop, no Docker, no commands needed) ─────

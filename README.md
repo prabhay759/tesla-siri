@@ -1,8 +1,8 @@
 # Tesla Siri Server
 
-Control your Tesla with **Siri voice commands** and **HomeKit** — powered by Groq (free Llama 3.3 AI) and deployed on Railway. No always-on computer, no ngrok.
+Control your Tesla with **Siri**, **HomeKit**, **Claude**, and any AI agent — powered by Groq (free Llama 3.3 AI) and deployed on Railway. No always-on computer, no ngrok.
 
-Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and sets temperature. Say **"Hey Siri, Car — let's go home"** and it navigates home, sets temp, and texts your ETA.
+Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and sets temperature. Or ask Claude: *"Lock my car and set the charge limit to 80%"* — and it does both at once.
 
 ---
 
@@ -13,7 +13,7 @@ Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and se
 - **Smart macros** — instant multi-step phrases that fire without any AI roundtrip
 - **Auto ETA SMS** — calculates real drive time and texts your contact
 - **Live dashboard** — browser UI with battery arc, quick controls, and AI chat
-- **MCP server** — Claude Desktop plugin for AI-assisted car control
+- **MCP server** — Claude Desktop, Claude.ai, and any MCP-compatible AI agent can control your car
 - **Auto token refresh** — Tesla tokens refresh every 6 hours, survives restarts
 
 ---
@@ -37,20 +37,23 @@ Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and se
 ## Architecture
 
 ```
-Siri Shortcut (iPhone)
-       │  POST /chat
+Siri Shortcut (iPhone)          Claude Desktop / Claude.ai
+       │  POST /chat                  │  MCP (Streamable HTTP or SSE)
+       ▼                             ▼
+┌──────────────────────── Railway Server ─────────────────────────┐
+│                                                                 │
+│  ├── Macro match? ──► run steps instantly                       │
+│  ├── Groq Llama 3.3 ──► parse natural language intent          │
+│  ├── MCP tool dispatcher ──► 19 Tesla tools (for AI agents)    │
+│  └── Tesla Fleet API ──► vehicle commands                       │
+│               └── OSRM ──► real drive-time ETA                 │
+└─────────────────────────────────────────────────────────────────┘
+       │  polls /homekit/* every 3s (60s cache)
        ▼
-Railway Server  ─────────────────────────────────────┐
-       │                                             │
-       ├── Macro match? ──► run steps instantly      │
-       ├── Groq Llama 3.3 ──► parse intent           │
-       └── Tesla Fleet API ──► vehicle commands      │
-               └── OSRM ──► real drive-time ETA      │
-                                                     │
-Homebridge (Raspberry Pi / Mac) ─────────────────────┘
-       │  polls /homekit/* endpoints
+Homebridge (Raspberry Pi / Mac Mini / NAS)
+       │
        ▼
-Home app / Hey Siri (native HomeKit)
+Home app / Hey Siri (native HomeKit accessories)
 ```
 
 ---
@@ -537,7 +540,169 @@ Expected: `{"reply":"Climate on and temperature set to 22°."}` — this fires i
 
 ---
 
-## Custom macros
+## Part 6 — Claude & AI Agents (MCP)
+
+The Railway server is a full [Model Context Protocol](https://modelcontextprotocol.io) server. Any MCP-compatible client (Claude Desktop, Claude.ai, Cursor, Windsurf, custom agents) can connect to it and use all 19 Tesla tools.
+
+### MCP endpoints
+
+| Endpoint | Protocol | Notes |
+|---|---|---|
+| `POST /mcp` | Streamable HTTP | Recommended — modern, stateful sessions |
+| `GET /mcp` | Streamable HTTP | SSE stream for existing session |
+| `DELETE /mcp` | Streamable HTTP | Close session |
+| `GET /sse` | SSE (legacy) | For older Claude Desktop builds |
+| `POST /messages` | SSE (legacy) | Paired with `/sse` |
+
+All MCP endpoints require the `x-siri-secret` header or `?secret=` query param.
+
+---
+
+### Option A — Claude Desktop (remote via Streamable HTTP)
+
+This is the simplest option. Claude Desktop connects directly to your Railway server — no local Node.js needed.
+
+1. Open Claude Desktop → **Settings** → **Developer** → **Edit Config**
+2. Paste this into `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "tesla": {
+      "type": "streamable-http",
+      "url": "https://YOUR-APP.railway.app/mcp",
+      "headers": {
+        "x-siri-secret": "YOUR_SIRI_SECRET"
+      }
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop — a hammer icon appears in the chat toolbar
+4. Say: *"What's my car's battery level?"* — Claude calls the `get_battery` tool and replies
+
+> **Config file locations**
+> - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+> - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+---
+
+### Option B — Claude Desktop (SSE legacy)
+
+Use this if Option A doesn't work with your Claude Desktop version.
+
+```json
+{
+  "mcpServers": {
+    "tesla": {
+      "type": "sse",
+      "url": "https://YOUR-APP.railway.app/sse",
+      "headers": {
+        "x-siri-secret": "YOUR_SIRI_SECRET"
+      }
+    }
+  }
+}
+```
+
+---
+
+### Option C — Claude Desktop (local stdio, no Railway needed)
+
+If you want Claude Desktop to call the car directly without going through Railway — run the MCP server locally:
+
+1. Clone this repo and run `npm install && npm run build`
+2. Edit `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "tesla": {
+      "command": "node",
+      "args": ["/absolute/path/to/tesla-siri/dist/index.js"],
+      "env": {
+        "TESLA_CLIENT_ID":     "YOUR_CLIENT_ID",
+        "TESLA_CLIENT_SECRET": "YOUR_CLIENT_SECRET",
+        "TESLA_REFRESH_TOKEN": "YOUR_REFRESH_TOKEN",
+        "TESLA_VIN":           "YOUR_VIN",
+        "MCP_MODE":            "stdio"
+      }
+    }
+  }
+}
+```
+
+3. Restart Claude Desktop
+
+> See `claude-mcp-config.json` in the repo root for all three options side by side.
+
+---
+
+### Option D — Claude.ai (remote MCP, no desktop app needed)
+
+Claude.ai supports remote MCP servers directly in the browser.
+
+1. Go to [claude.ai](https://claude.ai) → **Settings** → **Integrations**
+2. Click **Add Integration**
+3. Enter:
+   - **Name:** Tesla
+   - **URL:** `https://YOUR-APP.railway.app/mcp`
+   - **Header:** `x-siri-secret: YOUR_SIRI_SECRET`
+4. Click **Save** — Tesla tools appear immediately in new conversations
+
+Now you can chat with Claude on any device (phone, tablet, browser) and control your car.
+
+---
+
+### Option E — Custom AI agents (any MCP client)
+
+Any app that speaks MCP can connect. The server endpoint is:
+
+```
+POST https://YOUR-APP.railway.app/mcp
+Header: x-siri-secret: YOUR_SIRI_SECRET
+```
+
+Standard MCP initialization handshake, then `tools/call`. Available tools:
+
+```
+get_vehicle_status  get_battery         wake_vehicle
+lock_doors          unlock_doors        open_trunk
+set_sentry_mode     honk_horn           flash_lights
+start_climate       stop_climate        set_temperature
+start_charging      stop_charging       set_charge_limit
+open_charge_port    vent_windows        list_vehicles
+plan_route
+```
+
+Full schema at `https://YOUR-APP.railway.app/commands`.
+
+---
+
+### Test 12 — MCP connectivity
+
+```bash
+# Send a minimal MCP initialize request
+curl -X POST "https://YOUR-APP.railway.app/mcp?secret=YOUR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": { "name": "test", "version": "1.0" }
+    }
+  }'
+```
+
+Expected: a JSON response with `protocolVersion`, `capabilities`, and `serverInfo.name: "tesla"`.
+
+---
+
+
 
 Edit the `MACROS` object in `src/siri-server.ts` to add instant multi-action phrases:
 
@@ -557,20 +722,47 @@ Push to GitHub → Railway redeploys automatically.
 
 ## API reference
 
+### System
+
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
 | `/health` | GET | none | Server + token status |
 | `/commands` | GET | none | List all tools and aliases |
 | `/api/test-ai` | GET | none | Test Groq model connectivity |
-| `/setup/keys` | GET | secret | Generate EC key pair on server, display for copy |
-| `/setup/register` | GET | secret | Register Railway domain with Tesla Fleet API |
+
+### Setup (one-time)
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/setup/keys` | GET | secret | Generate EC key pair on server |
+| `/setup/register` | GET | secret | Register Railway domain with Tesla |
 | `/oauth/start` | GET | none | Begin Tesla OAuth (redirects to Tesla login) |
-| `/oauth/callback` | GET | none | Receives Tesla redirect, shows refresh token |
+| `/oauth/callback` | GET | none | Receives redirect, shows refresh token |
+
+### Siri & dashboard
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
 | `/` | GET | secret | Live dashboard |
 | `/chat` | POST | secret | AI + macro dispatch (Siri shortcut target) |
 | `/siri` | GET/POST | secret | Single-shot command (`?cmd=lock`) |
 | `/api/status` | GET | secret | Raw vehicle JSON |
-| `/api/command` | POST | secret | Run a command |
+| `/api/command` | POST | secret | Run a command by name |
+
+### MCP (Claude & AI agents)
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/mcp` | POST | secret | Streamable HTTP — initialize or call tools |
+| `/mcp` | GET | secret | Streamable HTTP — SSE stream for active session |
+| `/mcp` | DELETE | secret | Streamable HTTP — close session |
+| `/sse` | GET | secret | Legacy SSE transport — open session |
+| `/messages` | POST | secret | Legacy SSE transport — send message |
+
+### HomeKit
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
 | `/homekit/lock` | GET | secret | Lock status `{"value":0/1}` |
 | `/homekit/lock/lock` | POST | secret | Lock doors |
 | `/homekit/lock/unlock` | POST | secret | Unlock doors |
@@ -594,7 +786,7 @@ Push to GitHub → Railway redeploys automatically.
 ## Troubleshooting
 
 **`token_type` is `"partner"` not `"user"`**
-`TESLA_REFRESH_TOKEN` is missing or expired. Re-run steps 3–4 locally to get a fresh token, then update the Railway env var and redeploy.
+`TESLA_REFRESH_TOKEN` is missing or expired. Re-run steps 3–4 locally to get a fresh token (or use `/oauth/start` from the phone-only flow), then update the Railway env var and redeploy.
 
 **AI not responding**
 Check `GROQ_API_KEY` is set in Railway Variables. Hit `/api/test-ai` to see which models respond.
@@ -611,6 +803,18 @@ Check the Homebridge logs. Make sure the Railway URL and `SIRI_SECRET` in your H
 **"Could not find location"**
 `HOME_ADDRESS` or `WORK_ADDRESS` needs to be a full address: `123 Street, City, Country`.
 
+**Claude Desktop shows no Tesla tools / hammer icon missing**
+Verify your `claude_desktop_config.json` is valid JSON (use a JSON validator). Restart Claude Desktop fully (Quit from menu bar, not just close window). Check the Claude Desktop logs for MCP connection errors.
+
+**MCP initialize request returns 401**
+The `x-siri-secret` header value doesn't match `SIRI_SECRET` in Railway. Double-check for typos or trailing spaces.
+
+**MCP initialize request returns 400 "Bad session ID"**
+You're sending an `mcp-session-id` header without first initializing. Remove the header — the server generates a session ID on the first `initialize` request.
+
+**Claude.ai integration not appearing**
+Remote MCP integrations require a Pro or Team plan on Claude.ai. If you're on Free, use Claude Desktop (Option A or B above).
+
 ---
 
 ## Project structure
@@ -618,16 +822,19 @@ Check the Homebridge logs. Make sure the Railway URL and `SIRI_SECRET` in your H
 ```
 tesla-siri/
 ├── src/
-│   ├── siri-server.ts      Main server — Groq AI, macros, /chat, /homekit, dashboard
-│   ├── index.ts            MCP server (Claude Desktop integration)
+│   ├── siri-server.ts      Main server — Siri, MCP (Streamable HTTP + SSE),
+│   │                       HomeKit endpoints, Groq AI, macros, dashboard
+│   ├── index.ts            Standalone MCP server (stdio for local Claude Desktop)
 │   ├── tools/index.ts      19 Tesla tool definitions
 │   └── utils/
-│       ├── tesla-client.ts Tesla Fleet API HTTP client
-│       └── token-manager.ts OAuth token lifecycle
+│       ├── tesla-client.ts Tesla Fleet API HTTP client, auto-wake, 401-retry
+│       └── token-manager.ts OAuth token lifecycle, 6h auto-refresh
 ├── get-tesla-token.mjs     One-time: partner token + Tesla registration
 ├── exchange-code.mjs       One-time: auth code → user tokens
 ├── generate-keys.mjs       One-time: EC key pair for VCP
+├── claude-mcp-config.json  Claude Desktop config snippets (all three options)
 ├── railway.toml            Railway build + start config
+├── Dockerfile              Multi-stage Docker build for self-hosting
 ├── CLAUDE.md               Project memory for Claude Code
 └── .env.example            Environment variable template
 ```
