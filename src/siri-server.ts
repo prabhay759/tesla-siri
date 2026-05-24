@@ -33,7 +33,12 @@ if (missing.length) {
 const VIN          = process.env.TESLA_VIN!
 const PORT         = parseInt(process.env.PORT ?? '3000', 10)
 const SIRI_SECRET  = process.env.SIRI_SECRET ?? null
-const GROQ_KEY     = process.env.GROQ_API_KEY ?? null
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY ?? null
+const GROQ_KEY       = process.env.GROQ_API_KEY ?? null
+const AI_KEY         = OPENROUTER_KEY ?? GROQ_KEY
+const AI_URL         = OPENROUTER_KEY
+  ? 'https://openrouter.ai/api/v1/chat/completions'
+  : 'https://api.groq.com/openai/v1/chat/completions'
 const HOME_ADDRESS = process.env.HOME_ADDRESS ?? null
 const WORK_ADDRESS = process.env.WORK_ADDRESS ?? null
 
@@ -213,14 +218,25 @@ const GROQ_MODELS = [
   'llama-3.1-8b-instant',
   'mixtral-8x7b-32768',
 ]
+const OPENROUTER_MODELS = [
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'meta-llama/llama-3.1-8b-instruct:free',
+  'mistralai/mixtral-8x7b-instruct:free',
+]
+const AI_MODELS = OPENROUTER_KEY ? OPENROUTER_MODELS : GROQ_MODELS
 
-async function callGroq(model: string, messages: { role: string; content: string }[]): Promise<{ ok: boolean; text?: string; status?: number }> {
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+async function callAI(model: string, messages: { role: string; content: string }[]): Promise<{ ok: boolean; text?: string; status?: number }> {
+  const headers: Record<string, string> = {
+    'Content-Type':  'application/json',
+    'Authorization': `Bearer ${AI_KEY}`,
+  }
+  if (OPENROUTER_KEY) {
+    headers['HTTP-Referer'] = 'https://tesla-siri-production.up.railway.app'
+    headers['X-Title'] = 'Tesla Siri'
+  }
+  const res = await fetch(AI_URL, {
     method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${GROQ_KEY}`,
-    },
+    headers,
     body: JSON.stringify({
       model,
       messages,
@@ -230,7 +246,7 @@ async function callGroq(model: string, messages: { role: string; content: string
   })
   const rawBody = await res.text()
   if (!res.ok) {
-    console.error(`[groq/${model}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`)
+    console.error(`[ai/${model}] HTTP ${res.status}: ${rawBody.slice(0, 200)}`)
     return { ok: false, status: res.status }
   }
   let data: any
@@ -239,35 +255,35 @@ async function callGroq(model: string, messages: { role: string; content: string
   }
   const text: string | undefined = data?.choices?.[0]?.message?.content
   if (!text) {
-    console.error(`[groq/${model}] Empty response:`, JSON.stringify(data).slice(0, 200))
+    console.error(`[ai/${model}] Empty response:`, JSON.stringify(data).slice(0, 200))
     return { ok: false }
   }
   return { ok: true, text }
 }
 
 async function parseWithAI(cmd: string): Promise<AIResult | null> {
-  if (!GROQ_KEY) return null
+  if (!AI_KEY) return null
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user',   content: cmd },
   ]
-  for (const model of GROQ_MODELS) {
+  for (const model of AI_MODELS) {
     try {
-      const result = await callGroq(model, messages)
+      const result = await callAI(model, messages)
       if (!result.ok) {
-        if (result.status === 429) { console.warn(`[groq] ${model} rate-limited, trying next...`); continue }
+        if (result.status === 429) { console.warn(`[ai] ${model} rate-limited, trying next...`); continue }
         return null
       }
       const text = result.text!
-      console.log(`[groq/${model}] Response: ${text.slice(0, 150)}`)
+      console.log(`[ai/${model}] Response: ${text.slice(0, 150)}`)
       const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
       const jsonStr   = jsonMatch ? jsonMatch[1].trim() : text.trim()
       return JSON.parse(jsonStr) as AIResult
     } catch (err) {
-      console.error(`[groq/${model}] Error:`, err)
+      console.error(`[ai/${model}] Error:`, err)
     }
   }
-  console.error('[groq] All models failed or rate-limited')
+  console.error('[ai] All models failed or rate-limited')
   return null
 }
 
@@ -591,7 +607,7 @@ app.get('/health', (_req, res) => {
   res.json({
     status:       'ok',
     vin:          VIN,
-    ai:           GROQ_KEY ? `groq (${GROQ_MODELS[0]} → fallback chain)` : 'keyword-fallback',
+    ai:           AI_KEY ? `${OPENROUTER_KEY ? 'openrouter' : 'groq'} (${AI_MODELS[0]} → fallback chain)` : 'keyword-fallback',
     commands:     Object.keys(ALIASES).length,
     token_type:   getTokenType(),
     token_status: expiresMs > 0 ? `valid (expires in ${expiresMin}m)` : 'expired — will refresh on next call',
@@ -602,15 +618,23 @@ app.get('/commands', (_req, res) => {
   res.json({ tools: Object.keys(toolMap).sort(), aliases: Object.keys(ALIASES).sort() })
 })
 
-// ── /api/test-ai — tests Groq connectivity and each model ────────────────────
+// ── /api/test-ai — tests AI provider connectivity and each model ─────────────
 app.get('/api/test-ai', async (_req, res) => {
-  if (!GROQ_KEY) { res.json({ error: 'GROQ_API_KEY not set in .env' }); return }
+  if (!AI_KEY) { res.json({ error: 'No AI API key set — add OPENROUTER_API_KEY or GROQ_API_KEY in Railway Variables' }); return }
   const results: Record<string, any> = {}
-  for (const model of GROQ_MODELS) {
+  for (const model of AI_MODELS) {
     try {
-      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${AI_KEY}`,
+      }
+      if (OPENROUTER_KEY) {
+        headers['HTTP-Referer'] = 'https://tesla-siri-production.up.railway.app'
+        headers['X-Title'] = 'Tesla Siri'
+      }
+      const r = await fetch(AI_URL, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_KEY}` },
+        headers,
         body: JSON.stringify({
           model,
           messages: [{ role: 'user', content: 'Say hi in one word' }],
@@ -626,7 +650,7 @@ app.get('/api/test-ai', async (_req, res) => {
       results[model] = { error: e.message }
     }
   }
-  res.json({ models_tested: GROQ_MODELS, test_results: results })
+  res.json({ provider: OPENROUTER_KEY ? 'openrouter' : 'groq', models_tested: AI_MODELS, test_results: results })
 })
 
 // ── /api/status — raw vehicle data as JSON ────────────────────────────────────
@@ -758,14 +782,19 @@ async function chatWithAI(history: ChatMessage[]): Promise<AIChatResult> {
     { role: 'system', content: CHAT_SYSTEM_PROMPT },
     ...history,
   ]
-  for (const model of GROQ_MODELS) {
+  for (const model of AI_MODELS) {
     try {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const aiHeaders: Record<string, string> = {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${AI_KEY}`,
+      }
+      if (OPENROUTER_KEY) {
+        aiHeaders['HTTP-Referer'] = 'https://tesla-siri-production.up.railway.app'
+        aiHeaders['X-Title'] = 'Tesla Siri'
+      }
+      const res = await fetch(AI_URL, {
         method:  'POST',
-        headers: {
-          'Content-Type':  'application/json',
-          'Authorization': `Bearer ${GROQ_KEY}`,
-        },
+        headers: aiHeaders,
         body: JSON.stringify({
           model,
           messages,
@@ -818,7 +847,7 @@ app.post('/chat', requireAuth, async (req, res) => {
     return
   }
 
-  if (!GROQ_KEY) {
+  if (!AI_KEY) {
     // No AI — fall back to single-shot keyword dispatch
     const reply = await dispatch(message)
     res.json({ reply, session: sessionId })
@@ -1653,7 +1682,7 @@ app.get('/oauth/callback', async (req, res) => {
 
 app.listen(PORT, async () => {
   console.log('[tesla-siri] Server running on port ' + PORT)
-  console.log('[tesla-siri] AI mode: ' + (GROQ_KEY ? 'Groq/Llama (natural language)' : 'Keyword aliases'))
+  console.log('[tesla-siri] AI mode: ' + (AI_KEY ? `${OPENROUTER_KEY ? 'OpenRouter' : 'Groq'} (natural language)` : 'Keyword aliases (no AI key set)'))
   console.log('[tesla-siri] Dashboard: http://localhost:' + PORT + '/')
   console.log('[tesla-siri] Endpoint:  http://localhost:' + PORT + '/siri?cmd=<your+command>')
   console.log('[tesla-siri] Health:    http://localhost:' + PORT + '/health')
