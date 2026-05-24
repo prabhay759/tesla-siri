@@ -37,23 +37,96 @@ Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and se
 ## Architecture
 
 ```
-Siri Shortcut (iPhone)          Claude Desktop / Claude.ai
-       │  POST /chat                  │  MCP (Streamable HTTP or SSE)
-       ▼                             ▼
-┌──────────────────────── Railway Server ─────────────────────────┐
-│                                                                 │
-│  ├── Macro match? ──► run steps instantly                       │
-│  ├── Groq Llama 3.3 ──► parse natural language intent          │
-│  ├── MCP tool dispatcher ──► 19 Tesla tools (for AI agents)    │
-│  └── Tesla Fleet API ──► vehicle commands                       │
-│               └── OSRM ──► real drive-time ETA                 │
-└─────────────────────────────────────────────────────────────────┘
-       │  polls /homekit/* every 3s (60s cache)
-       ▼
-Homebridge (Raspberry Pi / Mac Mini / NAS)
-       │
-       ▼
-Home app / Hey Siri (native HomeKit accessories)
+┌─────────────────────────────────────────────────────────────────────┐
+│                         INPUT SOURCES                               │
+│                                                                     │
+│  📱 Siri Shortcut     🤖 Claude Desktop    🌐 Claude.ai / Agents   │
+│  "Hey Siri, Car..."   Claude Desktop app   claude.ai browser        │
+│  POST /chat           /mcp or /sse         /mcp (remote)            │
+└────────────┬──────────────────┬─────────────────────┬──────────────┘
+             │                  │                     │
+             ▼                  ▼                     ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    RAILWAY SERVER (siri-server.ts)                  │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Auth middleware — x-siri-secret header or ?secret= param   │   │
+│  └───────────────────────────────┬─────────────────────────────┘   │
+│                                  │                                  │
+│         POST /chat               │         POST /mcp                │
+│  ┌───────────────────────┐       │   ┌──────────────────────────┐  │
+│  │  1. Macro match?      │       │   │  MCP tool dispatcher     │  │
+│  │     → instant reply   │       │   │  (19 Tesla tools)        │  │
+│  │  2. Groq Llama 3.3    │       │   │  get_battery             │  │
+│  │     → parse intent    │       │   │  lock_doors              │  │
+│  │  3. Keyword fallback  │       │   │  start_climate           │  │
+│  └──────────┬────────────┘       │   │  set_charge_limit ...    │  │
+│             │                    │   └──────────┬───────────────┘  │
+│             └────────────────────┼──────────────┘                  │
+│                                  ▼                                  │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Tesla Fleet API (EU)                                       │   │
+│  │  fleet-api.prd.eu.vn.cloud.tesla.com                        │   │
+│  │  • Auto-wake vehicle (5 retries × 3s)                       │   │
+│  │  • OAuth2 token (auto-refreshes every 6h)                   │   │
+│  │  • 401 → invalidate + retry once                            │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │  GET /homekit/* (polled every 3s)
+                             │  60-second status cache prevents
+                             │  waking sleeping car on every poll
+                             ▼
+             ┌──────────────────────────────┐
+             │  Homebridge                  │
+             │  (Raspberry Pi / Mac / NAS)  │
+             │  homebridge-http-switch      │
+             │  homebridge-http-thermostat  │
+             └──────────────┬───────────────┘
+                            ▼
+             ┌──────────────────────────────┐
+             │  Apple Home app              │
+             │  🔒 Lock  🌡 Climate         │
+             │  👁 Sentry  ⚡ Charging      │
+             └──────────────────────────────┘
+```
+
+### Request flow — Siri voice command
+
+```
+"Hey Siri, warm up my car"
+        │
+        ▼
+Shortcuts app dictates text
+        │  POST /chat  { "message": "warm up my car" }
+        ▼
+Railway server receives request
+        │
+        ├─► Macro check: "warm up" → matched!
+        │   Runs: start_climate + set_temperature(22°)
+        │   Returns: { "reply": "Climate on and set to 22°" }
+        │
+        ▼  (if no macro match)
+        ├─► Groq Llama 3.3 parses intent → { tool: "start_climate" }
+        │
+        ▼
+Tesla Fleet API → vehicle command
+        │
+        ▼
+{ "reply": "Climate started." } ──► Siri speaks it aloud
+```
+
+### Request flow — Claude / AI agent
+
+```
+User asks Claude: "What's my battery and lock the car"
+        │
+        ▼
+Claude calls MCP tools in sequence:
+  1. get_battery   → "Battery: 78%, 230 km range"
+  2. lock_doors    → "Doors locked"
+        │
+        ▼
+Claude replies: "Your battery is at 78% (230 km range) and I've locked the car."
 ```
 
 ---
