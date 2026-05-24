@@ -199,11 +199,11 @@ export function invalidateToken(): void {
  * Safe to call from a background timer.
  */
 export async function forceRefresh(): Promise<void> {
-  if (!_tokens) {
-    await getAccessToken()   // bootstraps and refreshes
-    return
-  }
   try {
+    if (!_tokens) {
+      await getAccessToken()   // bootstraps and refreshes
+      return
+    }
     if (_tokens.refresh_token) {
       _tokens = await refreshWithRefreshToken(_tokens.refresh_token)
     } else {
@@ -213,7 +213,7 @@ export async function forceRefresh(): Promise<void> {
     const mins = Math.round((_tokens.expires_at - Date.now()) / 60000)
     console.error('[token] Proactive refresh OK — type=' + _tokens.token_type + ', expires in ' + mins + 'm')
   } catch (err) {
-    console.error('[token] Proactive refresh failed:', err)
+    console.error('[token] Proactive refresh failed (server continues without a token):', err)
   }
 }
 

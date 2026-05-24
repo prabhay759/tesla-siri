@@ -1660,7 +1660,9 @@ app.listen(PORT, async () => {
 
   // Startup: force-refresh to get a clean user token immediately
   console.log('[token] Startup refresh...')
-  await forceRefresh()
+  try { await forceRefresh() } catch (err) {
+    console.error('[token] Startup refresh failed (server continues):', err)
+  }
 
   // Background refresh every 6 hours — keeps the refresh token alive
   // (Tesla refresh tokens expire after ~45 days of no use)
