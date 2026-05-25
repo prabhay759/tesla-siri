@@ -14,6 +14,19 @@ const FLEET_HOST = 'fleet-api.prd.eu.vn.cloud.tesla.com'
 const MAX_WAKE_RETRIES = 5
 const WAKE_POLL_MS = 3000
 
+// Commands that require VCP signing on newer Tesla vehicles.
+// These are routed through the local tesla-http-proxy sidecar when available.
+const VCP_COMMANDS = new Set([
+  'auto_conditioning_start', 'auto_conditioning_stop', 'set_temps',
+  'window_control', 'charge_start', 'charge_stop', 'set_charge_limit',
+  'charge_port_door_open', 'charge_port_door_close',
+  'set_sentry_mode', 'actuate_trunk', 'set_preconditioning_max',
+])
+
+const vcpProxyAvailable = process.env.VCP_PROXY_AVAILABLE === '1'
+// Reuse a single agent that accepts self-signed localhost cert
+const vcpAgent = new https.Agent({ rejectUnauthorized: false })
+
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 
 interface ApiResponse<T = any> {
@@ -30,9 +43,14 @@ async function request<T>(
   const token = await getAccessToken()
   const data  = payload ? JSON.stringify(payload) : null
 
+  // Route VCP-required commands through the local signing proxy
+  const cmdName = path.match(/\/command\/([^/?]+)/)?.[1]
+  const useProxy = vcpProxyAvailable && cmdName !== undefined && VCP_COMMANDS.has(cmdName)
+
   const res = await new Promise<ApiResponse<T>>((resolve, reject) => {
     const opts: https.RequestOptions = {
-      hostname: FLEET_HOST,
+      hostname: useProxy ? '127.0.0.1' : FLEET_HOST,
+      port:     useProxy ? 4443 : 443,
       path,
       method,
       headers: {
@@ -40,6 +58,7 @@ async function request<T>(
         'Content-Type': 'application/json',
         ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}),
       },
+      ...(useProxy ? { agent: vcpAgent } : {}),
     }
     const req = https.request(opts, r => {
       let raw = ''

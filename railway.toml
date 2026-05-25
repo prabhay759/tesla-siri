@@ -1,12 +1,8 @@
 [build]
-builder = "nixpacks"
-buildCommand = "npm run build"
+builder = "dockerfile"
 
 [deploy]
-startCommand = "npm run start:siri"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
-
-[[services]]
-healthcheckPath = "/health"
-healthcheckTimeout = 30

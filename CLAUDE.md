@@ -32,6 +32,8 @@ railway.toml            Railway deployment config
 | `TESLA_CLIENT_SECRET` | ✅ | Starts with `ta-secret.` |
 | `TESLA_VIN` | ✅ | Your car's VIN |
 | `TESLA_REFRESH_TOKEN` | ✅ for Railway | Set as Railway env var; used to get access tokens on startup |
+| `TESLA_PUBLIC_KEY` | ✅ for VCP | Full PEM content of public key; served at `/.well-known/` |
+| `TESLA_PRIVATE_KEY` | ✅ for VCP | Full PEM content of private key; used by VCP signing proxy |
 | `GROQ_API_KEY` | Recommended | Free at console.groq.com; enables natural language |
 | `SIRI_SECRET` | Recommended | Auth header for all protected endpoints |
 | `HOME_ADDRESS` | Optional | Enables "go home" voice command |
