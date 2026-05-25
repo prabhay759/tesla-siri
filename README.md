@@ -18,19 +18,89 @@ Say **"Hey Siri, Car — warm up the car"** and your Tesla starts climate and se
 
 ---
 
-## Voice command examples
+## Sample commands
 
-| Say this | What happens |
+### Siri voice commands
+Say **"Hey Siri, Car"** then any of these:
+
+| What you say | What happens |
 |---|---|
-| "Let's go home" | Navigate home + climate 22° + text ETA |
-| "Drive to work" | Navigate to work + climate 22° |
-| "Warm up the car" | Climate on at 22° |
+| "Warm up the car" | Climate on + temperature set to 22° |
 | "What's my battery?" | Speaks battery % and range |
 | "Lock the car" | Locks all doors |
+| "Unlock the car" | Unlocks all doors |
 | "Turn on sentry" | Enables sentry mode |
-| "Set temp to 21" | Sets cabin temperature |
-| "Charge to 80 percent" | Sets charge limit |
-| "Plan a route via Costa Coffee then home" | Multi-stop navigation |
+| "Turn off sentry" | Disables sentry mode |
+| "Set temp to 21" | Sets cabin temperature to 21°C |
+| "Start charging" | Starts charging session |
+| "Stop charging" | Stops charging session |
+| "Charge to 80 percent" | Sets charge limit to 80% |
+| "Open the charge port" | Opens charge port door |
+| "Vent the windows" | Opens windows slightly |
+| "Honk the horn" | Honks horn |
+| "Flash the lights" | Flashes lights |
+| "Where is my car?" | Speaks car status and location |
+| "Let's go home" | Navigate home + climate 22° + text ETA |
+| "Drive to work" | Navigate to work + climate 22° |
+| "Plan a route via Starbucks then home" | Multi-stop navigation |
+| "What can you do?" | Lists all available commands |
+
+---
+
+### Macro commands (instant — no AI roundtrip)
+
+These fire immediately without calling Groq:
+
+| Phrase | Actions |
+|---|---|
+| "Warm up the car" | start_climate + set_temperature(22°) |
+| "Let's go home" | navigate_home + start_climate + SMS ETA |
+| "Drive to work" | navigate_work + start_climate |
+| "I'm leaving" | start_climate + set_temperature(22°) |
+| "Goodnight" | lock_doors + sentry_on |
+| "Arriving home" | unlock_doors + sentry_off |
+
+> Add your own macros by editing `MACROS` in `src/siri-server.ts`.
+
+---
+
+### Claude / AI agent commands
+
+Ask Claude anything in natural language — it chains multiple tools automatically:
+
+| Ask Claude | What it does |
+|---|---|
+| "What's my battery and is the car locked?" | Calls get_battery + get_vehicle_status |
+| "Lock my car and turn on sentry" | Calls lock_doors + set_sentry_mode |
+| "Set the charge limit to 90% and start charging" | Calls set_charge_limit + start_charging |
+| "What's the current temperature inside vs outside?" | Calls get_vehicle_status |
+| "Warm up to 23 degrees" | Calls start_climate + set_temperature |
+| "Is my car charging? What's the battery?" | Calls get_vehicle_status + get_battery |
+
+---
+
+### Direct API commands (for testing)
+
+Test any command in your browser or with curl:
+
+```bash
+# Battery status
+curl "https://YOUR-APP.railway.app/siri?cmd=battery&secret=YOUR_SECRET"
+
+# Start climate
+curl "https://YOUR-APP.railway.app/siri?cmd=warm+up+the+car&secret=YOUR_SECRET"
+
+# Lock
+curl "https://YOUR-APP.railway.app/siri?cmd=lock&secret=YOUR_SECRET"
+
+# Full vehicle status (JSON)
+curl "https://YOUR-APP.railway.app/api/status?secret=YOUR_SECRET"
+
+# Natural language via POST
+curl -X POST "https://YOUR-APP.railway.app/chat?secret=YOUR_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"set charge limit to 80 percent","session":"test"}'
+```
 
 ---
 
